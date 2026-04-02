@@ -1,0 +1,108 @@
+name: Deploy Azure Queue Workers
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_infra:
+        description: "Provision/update Azure infra scripts"
+        required: false
+        default: "true"
+      deploy_apps:
+        description: "Deploy/update Container Apps workers"
+        required: false
+        default: "true"
+      build_image:
+        description: "Build and push worker container image"
+        required: false
+        default: "true"
+      image_tag:
+        description: "Container image tag override"
+        required: false
+        default: ""
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZ_SUBSCRIPTION_ID_BIZ: ${{ secrets.AZ_SUBSCRIPTION_ID_BIZ }}
+      AZ_RESOURCE_GROUP_BIZ: ${{ secrets.AZ_RESOURCE_GROUP_BIZ }}
+      AZ_LOCATION_BIZ: ${{ secrets.AZ_LOCATION_BIZ }}
+      AZ_SERVICEBUS_NAMESPACE_BIZ: ${{ secrets.AZ_SERVICEBUS_NAMESPACE_BIZ }}
+      AZ_STORAGE_ACCOUNT_BIZ: ${{ secrets.AZ_STORAGE_ACCOUNT_BIZ }}
+      AZ_STORAGE_CONTAINER_BIZ: ${{ secrets.AZ_STORAGE_CONTAINER_BIZ }}
+      AZ_CONTAINERAPPS_ENV_BIZ: ${{ secrets.AZ_CONTAINERAPPS_ENV_BIZ }}
+      AZ_LOG_ANALYTICS_WS_BIZ: ${{ secrets.AZ_LOG_ANALYTICS_WS_BIZ }}
+      AZ_APP_INSIGHTS_NAME_BIZ: ${{ secrets.AZ_APP_INSIGHTS_NAME_BIZ }}
+      AZ_WORKER_IDENTITY_NAME_BIZ: ${{ secrets.AZ_WORKER_IDENTITY_NAME_BIZ }}
+      AZ_WORKER_APP_PREFIX_BIZ: ${{ secrets.AZ_WORKER_APP_PREFIX_BIZ }}
+      AZ_KEYVAULT_NAME_BIZ: ${{ secrets.AZ_KEYVAULT_NAME_BIZ }}
+      AZ_ACR_NAME_BIZ: ${{ secrets.AZ_ACR_NAME_BIZ }}
+      SUPABASE_URL_BIZ: ${{ github.ref_name == 'dev' && secrets.SUPABASE_URL_BIZ_DEV || secrets.SUPABASE_URL_BIZ }}
+      SUPABASE_SERVICE_KEY_BIZ: ${{ github.ref_name == 'dev' && secrets.SUPABASE_SERVICE_KEY_BIZ_DEV || secrets.SUPABASE_SERVICE_KEY_BIZ }}
+      SUPABASE_ANON_KEY_BIZ: ${{ github.ref_name == 'dev' && secrets.SUPABASE_ANON_KEY_BIZ_DEV || secrets.SUPABASE_ANON_KEY_BIZ }}
+      OPENAIAPIKEYBIZ: ${{ secrets.OPENAI_API_KEY }}
+      AZURE_OPENAI_API_KEY_BIZ: ${{ secrets.AZURE_OPENAI_API_KEY_BIZ }}
+      AZURE_OPENAI_BASE_URL_BIZ: ${{ secrets.AZURE_OPENAI_BASE_URL_BIZ }}
+      AZURE_OPENAI_DEPLOYMENT_BIZ: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_BIZ }}
+      AZURE_OPENAI_EMBEDDING_MODEL_BIZ: ${{ secrets.AZURE_OPENAI_EMBEDDING_MODEL_BIZ }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Compute image tag
+        id: image
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push worker image
+        if: ${{ github.event.inputs.build_image == 'true' }}
+        run: |
+          ACR_LOGIN_SERVER=$(az acr show --name "$AZ_ACR_NAME_BIZ" --resource-group "$AZ_RESOURCE_GROUP_BIZ" --query loginServer -o tsv)
+          az acr login --name "$AZ_ACR_NAME_BIZ"
+          IMAGE_URI="${ACR_LOGIN_SERVER}/bizradar-queue-workers:${{ steps.image.outputs.tag }}"
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+          echo "AZ_CONTAINER_IMAGE_BIZ=$IMAGE_URI" >> "$GITHUB_ENV"
+
+      - name: Resolve existing image when not building
+        if: ${{ github.event.inputs.build_image != 'true' }}
+        run: |
+          ACR_LOGIN_SERVER=$(az acr show --name "$AZ_ACR_NAME_BIZ" --resource-group "$AZ_RESOURCE_GROUP_BIZ" --query loginServer -o tsv)
+          IMAGE_TAG="${{ steps.image.outputs.tag }}"
+          echo "AZ_CONTAINER_IMAGE_BIZ=${ACR_LOGIN_SERVER}/bizradar-queue-workers:${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Make infra scripts executable
+        run: chmod +x infra/azure/*.sh
+
+      - name: Provision/update Azure infrastructure
+        if: ${{ github.event.inputs.deploy_infra == 'true' }}
+        run: |
+          infra/azure/create-servicebus.sh
+          infra/azure/create-storage.sh
+          infra/azure/create-container-apps-env.sh
+          infra/azure/configure-identities-rbac.sh
+          infra/azure/configure-observability.sh
+
+      - name: Deploy/update Container Apps workers
+        if: ${{ github.event.inputs.deploy_apps == 'true' }}
+        run: |
+          infra/azure/deploy-worker-apps.sh
+          infra/azure/configure-secrets.sh
+
+      - name: Post-deploy cutover checklist
+        if: ${{ github.event.inputs.deploy_apps == 'true' }}
+        run: |
+          echo "Validate queue age/depth, DLQ counts, error rate, and throughput for the 3-container topology."

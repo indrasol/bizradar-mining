@@ -1,0 +1,84 @@
+name: SAM CSV Extract and Enqueue
+
+on:
+  # GitHub Actions cron uses UTC. 08:00 UTC ~= 12:00 AM PST.
+  # During PDT months this will run at 1:00 AM local time unless adjusted.
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      csv_path:
+        description: "Absolute path to CSV file to download/enqueue"
+        required: false
+        default: ""
+      csv_limit:
+        description: "Optional row limit for enqueue producer"
+        required: false
+        default: ""
+      chunk_size:
+        description: "Rows per chunk message"
+        required: false
+        default: "500"
+      run_id:
+        description: "Optional custom run id"
+        required: false
+        default: ""
+
+jobs:
+  extract-and-enqueue:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Resolve CSV path and options
+        run: |
+          if [ -n "${{ github.event.inputs.csv_path }}" ]; then
+            echo "CSV_PATH=${{ github.event.inputs.csv_path }}" >> "$GITHUB_ENV"
+          else
+            echo "CSV_PATH=${{ github.workspace }}/ContractOpportunitiesFullCSV.csv" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.csv_limit }}" ]; then
+            echo "CSV_LIMIT=${{ github.event.inputs.csv_limit }}" >> "$GITHUB_ENV"
+          fi
+          echo "CSV_CHUNK_SIZE_BIZ=${{ github.event.inputs.chunk_size || '500' }}" >> "$GITHUB_ENV"
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            echo "PIPELINE_RUN_ID_BIZ=${{ github.event.inputs.run_id }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Download latest SAM.gov CSV
+        working-directory: ./sam_gov
+        env:
+          CSV_PATH: ${{ env.CSV_PATH }}
+        run: |
+          python data_extraction.py
+
+      - name: Upload/enqueue CSV chunks (Service Bus)
+        working-directory: ./sam_gov
+        env:
+          CSV_PATH: ${{ env.CSV_PATH }}
+          CSV_LIMIT: ${{ env.CSV_LIMIT }}
+          CSV_CHUNK_SIZE_BIZ: ${{ env.CSV_CHUNK_SIZE_BIZ }}
+          PIPELINE_RUN_ID_BIZ: ${{ env.PIPELINE_RUN_ID_BIZ }}
+          AZURE_STORAGE_ACCOUNT_URL_BIZ: ${{ secrets.AZURE_STORAGE_ACCOUNT_URL_BIZ }}
+          AZURE_STORAGE_CONTAINER_BIZ: ${{ secrets.AZURE_STORAGE_CONTAINER_BIZ }}
+          AZURE_SERVICEBUS_FQNS_BIZ: ${{ secrets.AZURE_SERVICEBUS_FQNS_BIZ }}
+          AZURE_SERVICEBUS_QUEUE_CHUNKS_BIZ: ${{ secrets.AZURE_SERVICEBUS_QUEUE_CHUNKS_BIZ }}
+        run: |
+          if [ -n "${CSV_LIMIT}" ]; then
+            python -m sam_gov.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
+          else
+            python -m sam_gov.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
+          fi

@@ -1,0 +1,138 @@
+name: SAM CSV Extract and Import
+
+on:
+  workflow_dispatch:
+    inputs:
+      csv_path:
+        description: 'Absolute path to CSV file to download/import'
+        required: false
+        default: ''
+      csv_limit:
+        description: 'Optional row limit for importer'
+        required: false
+        default: ''
+      csv_process_batch_size:
+        description: 'CSV processing batch size'
+        required: false
+        default: '2000'
+      csv_summary_concurrency:
+        description: 'Summary/embedding async concurrency'
+        required: false
+        default: '2'
+      csv_db_upsert_batch_size:
+        description: 'Supabase upsert batch size'
+        required: false
+        default: '200'
+      csv_index_embed_concurrency:
+        description: 'Embedding refresh concurrency'
+        required: false
+        default: '2'
+      csv_summary_versions_per_thread:
+        description: 'Thread versions considered for summary'
+        required: false
+        default: '40'
+      csv_thread_candidate_limit:
+        description: 'RPC candidate count per opportunity'
+        required: false
+        default: '20'
+      csv_enable_opportunity_classifier:
+        description: 'Enable opportunity type classifier'
+        required: false
+        default: 'true'
+      csv_classifier_concurrency:
+        description: 'Classifier async concurrency'
+        required: false
+        default: '2'
+      csv_classifier_min_confidence:
+        description: 'Minimum confidence before UNKNOWN fallback'
+        required: false
+        default: '0.62'
+      csv_classifier_flip_min_confidence:
+        description: 'Confidence required to accept thread type changes'
+        required: false
+        default: '0.78'
+      csv_classifier_prompt_version:
+        description: 'Classifier prompt version tag'
+        required: false
+        default: 'opp-type-v1'
+
+jobs:
+  extract-and-import:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Resolve CSV path input
+        run: |
+          if [ -n "${{ github.event.inputs.csv_path }}" ]; then
+            echo "CSV_PATH=${{ github.event.inputs.csv_path }}" >> "$GITHUB_ENV"
+          else
+            echo "CSV_PATH=${{ github.workspace }}/ContractOpportunitiesFullCSV.csv" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${{ github.event.inputs.csv_limit }}" ]; then
+            echo "CSV_LIMIT=${{ github.event.inputs.csv_limit }}" >> "$GITHUB_ENV"
+          fi
+          echo "CSV_PROCESS_BATCH_SIZE=${{ github.event.inputs.csv_process_batch_size || '2000' }}" >> "$GITHUB_ENV"
+          echo "CSV_SUMMARY_CONCURRENCY=${{ github.event.inputs.csv_summary_concurrency || '2' }}" >> "$GITHUB_ENV"
+          echo "CSV_DB_UPSERT_BATCH_SIZE=${{ github.event.inputs.csv_db_upsert_batch_size || '200' }}" >> "$GITHUB_ENV"
+          echo "CSV_INDEX_EMBED_CONCURRENCY=${{ github.event.inputs.csv_index_embed_concurrency || '2' }}" >> "$GITHUB_ENV"
+          echo "CSV_SUMMARY_VERSIONS_PER_THREAD=${{ github.event.inputs.csv_summary_versions_per_thread || '40' }}" >> "$GITHUB_ENV"
+          echo "CSV_THREAD_CANDIDATE_LIMIT=${{ github.event.inputs.csv_thread_candidate_limit || '20' }}" >> "$GITHUB_ENV"
+          echo "CSV_ENABLE_OPPORTUNITY_CLASSIFIER=${{ github.event.inputs.csv_enable_opportunity_classifier || 'true' }}" >> "$GITHUB_ENV"
+          echo "CSV_CLASSIFIER_CONCURRENCY=${{ github.event.inputs.csv_classifier_concurrency || '2' }}" >> "$GITHUB_ENV"
+          echo "CSV_CLASSIFIER_MIN_CONFIDENCE=${{ github.event.inputs.csv_classifier_min_confidence || '0.62' }}" >> "$GITHUB_ENV"
+          echo "CSV_CLASSIFIER_FLIP_MIN_CONFIDENCE=${{ github.event.inputs.csv_classifier_flip_min_confidence || '0.78' }}" >> "$GITHUB_ENV"
+          echo "CSV_CLASSIFIER_PROMPT_VERSION=${{ github.event.inputs.csv_classifier_prompt_version || 'opp-type-v1' }}" >> "$GITHUB_ENV"
+
+      - name: Download latest SAM.gov CSV
+        working-directory: ./sam_gov
+        env:
+          CSV_PATH: ${{ env.CSV_PATH }}
+        run: |
+          python data_extraction.py
+
+      - name: Import CSV into database (Supabase)
+        working-directory: ./sam_gov
+        env:
+          CSV_PATH: ${{ env.CSV_PATH }}
+          CSV_PROCESS_BATCH_SIZE: ${{ env.CSV_PROCESS_BATCH_SIZE }}
+          CSV_SUMMARY_CONCURRENCY: ${{ env.CSV_SUMMARY_CONCURRENCY }}
+          CSV_DB_UPSERT_BATCH_SIZE: ${{ env.CSV_DB_UPSERT_BATCH_SIZE }}
+          CSV_INDEX_EMBED_CONCURRENCY: ${{ env.CSV_INDEX_EMBED_CONCURRENCY }}
+          CSV_SUMMARY_VERSIONS_PER_THREAD: ${{ env.CSV_SUMMARY_VERSIONS_PER_THREAD }}
+          CSV_THREAD_CANDIDATE_LIMIT: ${{ env.CSV_THREAD_CANDIDATE_LIMIT }}
+          CSV_ENABLE_OPPORTUNITY_CLASSIFIER: ${{ env.CSV_ENABLE_OPPORTUNITY_CLASSIFIER }}
+          CSV_CLASSIFIER_CONCURRENCY: ${{ env.CSV_CLASSIFIER_CONCURRENCY }}
+          CSV_CLASSIFIER_MIN_CONFIDENCE: ${{ env.CSV_CLASSIFIER_MIN_CONFIDENCE }}
+          CSV_CLASSIFIER_FLIP_MIN_CONFIDENCE: ${{ env.CSV_CLASSIFIER_FLIP_MIN_CONFIDENCE }}
+          CSV_CLASSIFIER_PROMPT_VERSION: ${{ env.CSV_CLASSIFIER_PROMPT_VERSION }}
+          SUPABASE_URL_BIZ: ${{ secrets.SUPABASE_URL_BIZ }}
+          SUPABASE_SERVICE_KEY_BIZ: ${{ secrets.SUPABASE_SERVICE_KEY_BIZ }}
+          SUPABASE_ANON_KEY_BIZ: ${{ secrets.SUPABASE_ANON_KEY_BIZ }}
+          OPENAIAPIKEYBIZ: ${{ secrets.OPENAI_API_KEY }}
+          AZURE_OPENAI_API_KEY_BIZ: ${{ secrets.AZURE_OPENAI_API_KEY_BIZ }}
+          AZURE_OPENAI_BASE_URL_BIZ: ${{ secrets.AZURE_OPENAI_BASE_URL_BIZ }}
+          AZURE_OPENAI_DEPLOYMENT_BIZ: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_BIZ }}
+          AZURE_OPENAI_EMBEDDING_MODEL_BIZ: ${{ secrets.AZURE_OPENAI_EMBEDDING_MODEL_BIZ }}
+        run: |
+          if [ -n "${CSV_LIMIT}" ]; then
+            python -m sam_gov.csv_import_sam_gov --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}"
+          else
+            python -m sam_gov.csv_import_sam_gov --csv-path "${CSV_PATH}"
+          fi
+
+
