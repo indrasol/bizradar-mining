@@ -35,5 +35,5 @@ jobs:
           subscriptionId: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
           resourceGroupName: ${{ secrets.AZ_RESOURCE_GROUP_BIZ }}
           template: ./infra/azure/bicep/main.bicep
-          parameters: ./infra/azure/bicep/params/${{ github.event.inputs.environment }}.bicepparam
+          parameters: ./infra/azure/bicep/params/${{ github.event.inputs.environment || 'dev' }}.bicepparam
           failOnStdErr: false
