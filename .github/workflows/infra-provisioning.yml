@@ -1,5 +1,8 @@
 name: "[Infra] Azure Provisioning"
 on:
+  push:
+    paths:
+      - 'infra/azure/bicep/**'
   workflow_dispatch:
     inputs:
       environment:
