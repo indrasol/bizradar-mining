@@ -11,18 +11,19 @@ logger = get_logger(__name__)
 
 
 def _handle_raw(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
-    payload = envelope.data or {}
+    payload = envelope.data if envelope.data is not None else {}
     row = payload.get("row")
     run_meta = payload.get("run_meta") if isinstance(payload.get("run_meta"), dict) else {}
     if not isinstance(row, dict):
         raise ValueError("raw row payload missing 'row' dict")
 
     processed = process_csv_row(row)
-    if not processed:
-        logger.warning(f"normalize_dedupe skipped row_index={envelope.row_index}: missing notice_id")
+    if processed is None:
+        logger.warning(f"normalize_dedupe skipped row_index={envelope.row_index}: missing notice_id or invalid row")
         return None
 
-    notice_id = str(processed.get("notice_id") or "")
+    notice_id_val = processed.get("notice_id")
+    notice_id = str(notice_id_val).strip() if notice_id_val is not None else ""
     return make_envelope(
         run_id=envelope.run_id,
         trace_id=envelope.trace_id,

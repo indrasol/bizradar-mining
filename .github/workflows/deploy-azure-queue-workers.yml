@@ -73,7 +73,7 @@ jobs:
           ACR_LOGIN_SERVER=$(az acr show --name "$AZ_ACR_NAME_BIZ" --resource-group "$AZ_RESOURCE_GROUP_BIZ" --query loginServer -o tsv)
           az acr login --name "$AZ_ACR_NAME_BIZ"
           IMAGE_URI="${ACR_LOGIN_SERVER}/bizradar-queue-workers:${{ steps.image.outputs.tag }}"
-          docker build -t "$IMAGE_URI" .
+          docker build -t "$IMAGE_URI" -f docker/container1.Dockerfile .
           docker push "$IMAGE_URI"
           echo "AZ_CONTAINER_IMAGE_BIZ=$IMAGE_URI" >> "$GITHUB_ENV"
 

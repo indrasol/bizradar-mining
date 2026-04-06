@@ -7,14 +7,15 @@ from .queue_io import run_worker_loop
 
 
 def _handle_embedded(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
-    payload = envelope.data or {}
+    payload = envelope.data if envelope.data is not None else {}
     row = payload.get("row")
     run_meta = payload.get("run_meta") if isinstance(payload.get("run_meta"), dict) else {}
     if not isinstance(row, dict):
         raise ValueError("embedded payload missing 'row' dict")
 
     result = insert_data([row])
-    notice_id = str(row.get("notice_id") or "")
+    notice_id_val = row.get("notice_id")
+    notice_id = str(notice_id_val).strip() if notice_id_val is not None else ""
     return make_envelope(
         run_id=envelope.run_id,
         trace_id=envelope.trace_id,

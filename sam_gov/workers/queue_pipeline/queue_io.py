@@ -27,14 +27,13 @@ def _with_retry(func: Callable, *, retries: int = 5, base_sleep_s: float = 0.5):
     raise last_exc  # type: ignore[misc]
 
 
-def send_envelope(servicebus_fqns: str, queue_name: str, envelope: QueueEnvelope) -> None:
+def send_envelope(servicebus_fqns: str, queue_name: str, envelope: QueueEnvelope, *, client: Optional[ServiceBusClient] = None) -> None:
     if not servicebus_fqns:
         raise ValueError("Service Bus FQNS is required")
     payload = envelope.to_json()
 
     def _send() -> None:
-        credential = DefaultAzureCredential()
-        with ServiceBusClient(fully_qualified_namespace=servicebus_fqns, credential=credential) as client:
+        if client:
             with client.get_queue_sender(queue_name=queue_name) as sender:
                 sender.send_messages(
                     ServiceBusMessage(
@@ -43,6 +42,17 @@ def send_envelope(servicebus_fqns: str, queue_name: str, envelope: QueueEnvelope
                         message_id=envelope.message_id,
                     )
                 )
+        else:
+            credential = DefaultAzureCredential()
+            with ServiceBusClient(fully_qualified_namespace=servicebus_fqns, credential=credential) as sb_client:
+                with sb_client.get_queue_sender(queue_name=queue_name) as sender:
+                    sender.send_messages(
+                        ServiceBusMessage(
+                            body=payload,
+                            content_type="application/json",
+                            message_id=envelope.message_id,
+                        )
+                    )
 
     _with_retry(_send)
 
@@ -81,7 +91,7 @@ def run_worker_loop(
 
                 for msg in messages:
                     try:
-                        raw_body = b"".join([bytes(chunk) for chunk in msg.body]).decode("utf-8")
+                        raw_body = str(msg)
                         envelope = QueueEnvelope.from_json(raw_body)
                         if envelope.payload_version != "v1":
                             receiver.dead_letter_message(
@@ -91,13 +101,15 @@ def run_worker_loop(
                             )
                             continue
                         next_envelope = handler(envelope)
-                        if next_envelope and output_queue:
+                        if next_envelope is not None and output_queue:
                             send_envelope(servicebus_fqns, output_queue, next_envelope)
                         receiver.complete_message(msg)
                     except Exception as exc:  # noqa: BLE001
+                        import traceback
                         logger.error(
                             f"{worker_name} failed for message {msg.message_id} "
-                            f"(delivery_count={getattr(msg, 'delivery_count', '?')}): {exc}"
+                            f"(delivery_count={getattr(msg, 'delivery_count', '?')}): {exc}\n"
+                            f"{traceback.format_exc()}"
                         )
                         delivery_count = int(getattr(msg, "delivery_count", 1) or 1)
                         if delivery_count >= 5:

@@ -1,4 +1,7 @@
-from sam_gov.config.settings import env_int, env_str
+try:
+    from sam_gov.config.settings import env_int, env_str
+except Exception:
+    from sam_gov.config.settings import env_int, env_str
 
 
 QUEUE_NAMES = {

@@ -1,0 +1,36 @@
+name: "[Infra] Azure Provisioning"
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+
+# Permissions required for OIDC login
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+
+      - name: Deploy Bicep
+        uses: azure/arm-deploy@v2
+        with:
+          subscriptionId: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+          resourceGroupName: ${{ secrets.AZ_RESOURCE_GROUP_BIZ }}
+          template: ./infra/azure/bicep/main.bicep
+          parameters: ./infra/azure/bicep/params/${{ github.event.inputs.environment }}.bicepparam
+          failOnStdErr: false

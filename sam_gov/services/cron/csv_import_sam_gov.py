@@ -179,7 +179,7 @@ def build_embedding_text_full_row(opp: Dict[str, Any]) -> str:
     return "\n".join(lines)[:20000]
 
 async def generate_embedding(text: str) -> List[float]:
-    from utils.openai_client import get_openai_client
+    from sam_gov.utils.openai_client import get_openai_client
     client = get_openai_client()
     r = client.embeddings.create(model=EMBED_MODEL, input=text)
     return r.data[0].embedding
@@ -1131,7 +1131,7 @@ async def _classify_type_with_llm(
     thread_context_text: str,
     prior_type: Optional[str],
 ) -> Dict[str, Any]:
-    from utils.openai_client import get_openai_client
+    from sam_gov.utils.openai_client import get_openai_client
 
     title = safe_string(row.get("title"), "")
     description = safe_string(row.get("description"), "")
