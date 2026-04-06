@@ -4,7 +4,10 @@ from typing import Dict, Optional, Set
 
 from sam_gov.utils.logger import get_logger
 from sam_gov.utils.db_utils import get_supabase_connection
-from sam_gov.config.settings import env_int
+try:
+    from sam_gov.config.settings import env_int
+except Exception:
+    from sam_gov.config.settings import env_int
 from .config import SERVICEBUS_FQNS, QUEUE_NAMES
 from .contracts import QueueEnvelope
 from .queue_io import run_worker_loop
@@ -45,7 +48,8 @@ def _mark_inactive_notices(latest_notice_ids: set[str]) -> int:
         .eq("active", True)
         .execute()
     )
-    active_rows = getattr(active_resp, "data", None) or []
+    active_rows = getattr(active_resp, "data", None)
+    active_rows = active_rows if active_rows is not None else []
     active_ids = {r.get("notice_id") for r in active_rows if r.get("notice_id")}
     to_deactivate = list(active_ids - latest_notice_ids)
     if not to_deactivate:
@@ -124,14 +128,15 @@ def _maybe_finalize_run(run_id: str, now_ts: float) -> None:
 def _handle_result(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
     run_id = envelope.run_id
     _RUN_COUNTS[run_id] = _RUN_COUNTS.get(run_id, 0) + 1
-    payload = envelope.data or {}
+    payload = envelope.data if envelope.data is not None else {}
     row = payload.get("row") if isinstance(payload.get("row"), dict) else {}
     run_meta = payload.get("run_meta") if isinstance(payload.get("run_meta"), dict) else {}
-    notice_id = str((row or {}).get("notice_id") or "").strip()
+    row_obj = row if row is not None else {}
+    notice_id = str(row_obj.get("notice_id") if row_obj.get("notice_id") is not None else "").strip()
 
     state = _RUN_STATE.setdefault(run_id, RunState())
     state.last_seen_ts = time.time()
-    if notice_id:
+    if notice_id is not None and str(notice_id).strip():
         state.seen_notice_ids.add(notice_id)
         state.processed_notice_rows += 1
 

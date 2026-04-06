@@ -1,0 +1,72 @@
+name: "[App] Container 1 CI/CD"
+on:
+  push:
+    paths:
+      - 'sam_gov/workers/queue_pipeline/pipeline_core_worker.py'
+      - 'sam_gov/workers/queue_pipeline/chunk_reader_worker.py'
+      - 'sam_gov/workers/queue_pipeline/normalize_dedupe_worker.py'
+      - 'sam_gov/workers/queue_pipeline/thread_match_worker.py'
+      - 'sam_gov/workers/queue_pipeline/persist_worker.py'
+      - 'sam_gov/workers/queue_pipeline/run_finalizer_worker.py'
+      - 'requirements.txt'
+      - 'docker/container1.Dockerfile'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+
+      - name: Build and Push Worker Image
+        run: |
+          ACR_NAME="${{ secrets.AZ_ACR_NAME }}"
+          az acr login --name "$ACR_NAME"
+          
+          # 1) Purge existing images to save space/cost
+          IMAGE_NAME="bizradar-cleaning-and-upsert"
+          echo "Fetching tags for repository $IMAGE_NAME in ACR $ACR_NAME..."
+          TAGS=$(az acr repository show-tags --name "$ACR_NAME" --repository "$IMAGE_NAME" --output tsv || true)
+          if [ -n "$TAGS" ]; then
+            echo "Deleting existing tags..."
+            for TAG in $TAGS; do
+              echo " - $IMAGE_NAME:$TAG"
+              az acr repository delete --yes --name "$ACR_NAME" --image "$IMAGE_NAME:$TAG" || true
+            done
+          else
+            echo "No existing tags found."
+          fi
+          
+          # 2) Dynamically get the login server
+          ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)
+          
+          # We always pull the latest base image
+          BASE_IMAGE="$ACR_LOGIN_SERVER/bizradar-base:latest"
+          docker pull $BASE_IMAGE
+          
+          IMAGE_TAG=${{ github.sha }}
+          IMAGE_URI="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+          
+          docker build --build-arg BASE_IMAGE=$BASE_IMAGE -t $IMAGE_URI -f docker/container1.Dockerfile .
+          docker push $IMAGE_URI
+
+      - name: Update Container App
+        run: |
+          # Dynamically get the login server for production-grade robustness
+          ACR_LOGIN_SERVER=$(az acr show --name "${{ secrets.AZ_ACR_NAME }}" --query loginServer --output tsv)
+          az containerapp update \
+            --name ca-cleaning-and-upsert \
+            --resource-group ${{ secrets.AZ_RESOURCE_GROUP_BIZ }} \
+            --image "$ACR_LOGIN_SERVER/bizradar-cleaning-and-upsert:${{ github.sha }}"

@@ -11,8 +11,8 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypedDict
 
-from sam_gov.utils.db_utils import get_supabase_connection
 from sam_gov.utils.logger import get_logger
+from sam_gov.utils.db_utils import get_db_connection
 from sam_gov.utils.openai_client import get_openai_client
 from sam_gov.config.settings import AZURE_OPENAI_EMBEDDING_MODEL, env_int, env_str
 

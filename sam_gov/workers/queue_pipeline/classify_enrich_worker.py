@@ -7,6 +7,7 @@ from sam_gov.services.cron.csv_import_sam_gov import (
     _fetch_versions_by_thread_ids_sb,
     _fetch_versions_by_thread_keys_sb,
     _looks_like_uuid,
+    _coerce_row_for_supabase,
     parse_date,
 )
 from sam_gov.services.summary_service import build_prioritized_thread_description, generate_description_summary
@@ -19,8 +20,10 @@ _SUPABASE = get_supabase_connection(use_service_key=True)
 
 
 def _load_persisted_versions(row: dict) -> list[dict]:
-    thread_id = str(row.get("thread_id") or "").strip()
-    if thread_id and _looks_like_uuid(thread_id):
+    # Use safe extraction to avoid truth-value ambiguity on arrays
+    val_thread_id = row.get("thread_id")
+    thread_id = str(val_thread_id).strip() if val_thread_id is not None else ""
+    if (thread_id is not None and str(thread_id).strip()) and _looks_like_uuid(thread_id):
         by_id = _fetch_versions_by_thread_ids_sb(
             _SUPABASE,
             [thread_id],
@@ -28,8 +31,9 @@ def _load_persisted_versions(row: dict) -> list[dict]:
         )
         return by_id.get(thread_id, [])
 
-    thread_key = str(row.get("thread_key") or "").strip()
-    if thread_key:
+    val_thread_key = row.get("thread_key")
+    thread_key = str(val_thread_key).strip() if val_thread_key is not None else ""
+    if thread_key is not None and str(thread_key).strip():
         by_key = _fetch_versions_by_thread_keys_sb(
             _SUPABASE,
             [thread_key],
@@ -72,14 +76,16 @@ async def _enrich_row(row: dict) -> dict:
 
 
 def _handle_threaded(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
-    payload = envelope.data or {}
+    payload = envelope.data if envelope.data is not None else {}
     row = payload.get("row")
     run_meta = payload.get("run_meta") if isinstance(payload.get("run_meta"), dict) else {}
     if not isinstance(row, dict):
         raise ValueError("threaded payload missing 'row' dict")
 
     row = asyncio.run(_enrich_row(row))
-    notice_id = str(row.get("notice_id") or "")
+    row = _coerce_row_for_supabase(row)
+    notice_id_val = row.get("notice_id")
+    notice_id = str(notice_id_val).strip() if notice_id_val is not None else ""
     return make_envelope(
         run_id=envelope.run_id,
         trace_id=envelope.trace_id,

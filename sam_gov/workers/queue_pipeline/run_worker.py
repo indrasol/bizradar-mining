@@ -1,6 +1,6 @@
 import argparse
 
-from . import (
+from sam_gov.workers.queue_pipeline import (
     chunk_reader_worker,
     normalize_dedupe_worker,
     thread_match_worker,

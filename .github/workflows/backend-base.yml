@@ -1,0 +1,60 @@
+name: "[Infra] Backend Base Image"
+on:
+  push:
+    paths:
+      - 'requirements.txt'
+      - 'sam_gov/utils/**'
+      - 'sam_gov/config/**'
+      - 'docker/base.Dockerfile'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-base:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+
+      - name: Build and Push Base Image
+        shell: bash
+        run: |
+          ACR_NAME="${{ secrets.AZ_ACR_NAME }}"
+          az acr login --name "$ACR_NAME"
+          
+          # 1) Purge existing images to save space/cost (The "Professional" way)
+          IMAGE_NAME="bizradar-base"
+          echo "Fetching tags for repository $IMAGE_NAME in ACR $ACR_NAME..."
+          TAGS=$(az acr repository show-tags --name "$ACR_NAME" --repository "$IMAGE_NAME" --output tsv || true)
+          if [ -n "$TAGS" ]; then
+            echo "Deleting existing tags..."
+            for TAG in $TAGS; do
+              echo " - $IMAGE_NAME:$TAG"
+              az acr repository delete --yes --name "$ACR_NAME" --image "$IMAGE_NAME:$TAG" || true
+            done
+          else
+            echo "No existing tags found."
+          fi
+          
+          # 2) Dynamically get the login server
+          ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)
+          
+          IMAGE_URI="$ACR_LOGIN_SERVER/$IMAGE_NAME:latest"
+          IMAGE_TAG_URI="$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }}"
+          
+          echo "Building image: $IMAGE_URI"
+          docker build -t "$IMAGE_URI" -t "$IMAGE_TAG_URI" -f docker/base.Dockerfile .
+          
+          echo "Pushing images..."
+          docker push "$IMAGE_URI"
+          docker push "$IMAGE_TAG_URI"

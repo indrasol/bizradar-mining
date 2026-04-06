@@ -1,0 +1,300 @@
+name: Data Collection Jobs
+
+on:
+  # Run jobs daily at midnight UTC
+  schedule:
+    - cron: '0 0 * * *'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job to run (freelancer, sam_gov, import_csv, or leave empty for all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - freelancer
+          - sam_gov
+          - import_csv
+        default: ''
+
+jobs:
+  setup-etl-history:
+    name: Create ETL History Record
+    runs-on: ubuntu-latest
+    outputs:
+      record_id: ${{ steps.create-record.outputs.record_id }}
+      trigger_type: ${{ steps.determine-trigger.outputs.trigger_type }}
+
+    steps:
+      - name: Determine trigger type
+        id: determine-trigger
+        run: |
+          if [ "${{ github.event_name }}" == "schedule" ]; then
+            echo "trigger_type=github-scheduled" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "trigger_type=github-manual" >> $GITHUB_OUTPUT
+          else
+            echo "trigger_type=unknown" >> $GITHUB_OUTPUT
+          fi
+          echo "Trigger type: $(cat $GITHUB_OUTPUT | grep trigger_type | cut -d= -f2)"
+
+      - name: Checkout repository for DB access
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install DB dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install psycopg2-binary
+      
+      - name: Create ETL history record
+        id: create-record
+        run: |
+          python - <<EOF
+          import os
+          import psycopg2
+          import sys
+          
+          try:
+              # Connect to the database
+              conn = psycopg2.connect(
+                  host=os.environ['DB_HOST'],
+                  port=os.environ['DB_PORT'],
+                  database=os.environ['DB_NAME'],
+                  user=os.environ['DB_USER'],
+                  password=os.environ['DB_PASSWORD']
+              )
+              cursor = conn.cursor()
+              
+              # Insert new record with appropriate trigger type
+              trigger_type = "${{ steps.determine-trigger.outputs.trigger_type }}"
+              cursor.execute(
+                  "INSERT INTO etl_history (status, trigger_type) VALUES (%s, %s) RETURNING id",
+                  ('triggered', trigger_type)
+              )
+              
+              record_id = cursor.fetchone()[0]
+              conn.commit()
+              cursor.close()
+              conn.close()
+              
+              # Output the record ID for downstream jobs
+              print(f"record_id={record_id}", file=open(os.environ['GITHUB_OUTPUT'], 'a'))
+              print(f"Created ETL history record with ID: {record_id}, trigger_type: {trigger_type}")
+              
+          except Exception as e:
+              print(f"Error creating ETL history record: {e}")
+              sys.exit(1)
+          EOF
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+
+  import-csv-to-db:
+    name: Import SAM.gov CSV to Database
+    needs: setup-etl-history
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'import_csv' || github.event.inputs.job == 'sam_gov' || github.event.inputs.job == ''))
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas psycopg2-binary python-dotenv tqdm requests
+      
+      - name: Import CSV to Database
+        run: |
+          # python scripts/import_csv_to_db.py
+          python -m sam_gov.utils.import_csv_request
+        env:
+          DBHOSTBIZ: ${{ secrets.DB_HOST }}
+          DBPORTBIZ: ${{ secrets.DB_PORT }}
+          DBNAMEBIZ: ${{ secrets.DB_NAME }}
+          DBUSERBIZ: ${{ secrets.DB_USER }}
+          DBPASSWORDBIZ: ${{ secrets.DB_PASSWORD }}        
+
+  freelancer-scraper:
+    name: Freelancer.com Data Collection
+    needs: setup-etl-history
+
+    # Run when scheduled or manually triggered with appropriate input
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'freelancer' || github.event.inputs.job == ''))
+    runs-on: ubuntu-latest
+    # outputs:
+    #   record_count: ${{ steps.run-scraper.outputs.record_count }}
+    #   new_record_count: ${{ steps.run-scraper.outputs.new_record_count }}
+    #   status: ${{ steps.run-scraper.outputs.status }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install requests beautifulsoup4 pandas psycopg2-binary python-dotenv
+# Comment out only the step that runs the freelancer scraper
+#    - name: Run Freelancer scraper
+#      id: run-scraper
+#      run: |
+#        python -m sam_gov.services.cron.freelancer --record-id ${{ needs.setup-etl-history.outputs.record_id }} --trigger-type ${{ needs.setup-etl-history.outputs.trigger_type }}
+#        result=$(python -m sam_gov.services.cron.freelancer --record-id ${{ needs.setup-etl-history.outputs.record_id }} --trigger-type ${{ needs.setup-etl-history.outputs.trigger_type }})
+#        echo "Freelancer scraper result: $result"
+#        count=$(echo "$result" | grep -o '"count": [0-9]*' | sed 's/"count": //')
+#        new_count=$(echo "$result" | grep -o '"new_count": [0-9]*' | sed 's/"new_count": //')
+#        status=$(echo "$result" | grep -o '"status": "[^"]*"' | sed 's/"status": "//' | sed 's/"$//')
+#        echo "record_count=$count" >> $GITHUB_OUTPUT
+#        echo "new_record_count=$new_count" >> $GITHUB_OUTPUT
+#        echo "status=$status" >> $GITHUB_OUTPUT
+          
+        env:
+          # Database credentials
+          DBHOSTBIZ: ${{ secrets.DB_HOST }}
+          DBPORTBIZ: ${{ secrets.DB_PORT }}
+          DBNAMEBIZ: ${{ secrets.DB_NAME }}
+          DBUSERBIZ: ${{ secrets.DB_USER }}
+          DBPASSWORDBIZ: ${{ secrets.DB_PASSWORD }}
+          OPENAIAPIKEYBIZ: ${{ secrets.OPENAI_API_KEY }}
+          ETL_RECORD_ID: ${{ needs.setup-etl-history.outputs.record_id }}
+          PINECONEAPIKEYBIZ: ${{ secrets.PINECONE_API_KEY }}
+          PINECONEENVBIZ: ${{ secrets.PINECONE_ENV }}
+          PINECONEINDEXNAMEBIZ: ${{ secrets.PINECONEINDEXNAMEBIZ }}
+          EMBEDDINGMODELBIZ: ${{ secrets.EMBEDDINGMODELBIZ }}
+  
+  sam-gov-api:
+    name: SAM.gov API Data Collection
+    needs: setup-etl-history
+
+    # Run when scheduled or manually triggered with appropriate input
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.job == 'sam_gov' || github.event.inputs.job == ''))
+    runs-on: ubuntu-latest
+    outputs:
+      record_count: ${{ steps.run-api.outputs.record_count }}
+      new_record_count: ${{ steps.run-api.outputs.new_record_count }}
+      status: ${{ steps.run-api.outputs.status }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install aiohttp certifi psycopg2-binary python-dotenv
+      
+      - name: Run SAM.gov API fetcher
+        id: run-api
+        run: |
+          result=$(python -m sam_gov.services.cron.sam_gov --record-id ${{ needs.setup-etl-history.outputs.record_id }} --trigger-type ${{ needs.setup-etl-history.outputs.trigger_type }})
+          echo "SAM.gov API fetcher result: $result"
+          # Extract key values from the result
+          count=$(echo "$result" | grep -o '"count": [0-9]*' | sed 's/"count": //')
+          new_count=$(echo "$result" | grep -o '"new_count": [0-9]*' | sed 's/"new_count": //')
+          status=$(echo "$result" | grep -o '"status": "[^"]*"' | sed 's/"status": "//' | sed 's/"$//')
+          # Set outputs
+          echo "record_count=$count" >> $GITHUB_OUTPUT
+          echo "new_record_count=$new_count" >> $GITHUB_OUTPUT
+          echo "status=$status" >> $GITHUB_OUTPUT
+
+        env:
+          # Database credentials
+          DBHOSTBIZ: ${{ secrets.DB_HOST }}
+          DBPORTBIZ: ${{ secrets.DB_PORT }}
+          DBNAMEBIZ: ${{ secrets.DB_NAME }}
+          DBUSERBIZ: ${{ secrets.DB_USER }}
+          DBPASSWORDBIZ: ${{ secrets.DB_PASSWORD }}
+          SAMAPIKEY: ${{ secrets.SAM_API_KEY }}
+          OPENAIAPIKEYBIZ: ${{ secrets.OPENAI_API_KEY }}
+          ETL_RECORD_ID: ${{ needs.setup-etl-history.outputs.record_id }}
+          PINECONEAPIKEYBIZ: ${{ secrets.PINECONE_API_KEY }}
+          PINECONEENVBIZ: ${{ secrets.PINECONE_ENV }}
+          PINECONEINDEXNAMEBIZ: ${{ secrets.PINECONEINDEXNAMEBIZ }}
+          EMBEDDINGMODELBIZ: ${{ secrets.EMBEDDINGMODELBIZ }}
+
+  update-etl-history:
+    name: Update ETL History
+    needs: [setup-etl-history, freelancer-scraper, sam-gov-api]
+    # Run only if at least one of the data collection jobs was executed
+    if: always() && (needs.freelancer-scraper.result != 'skipped' || needs.sam-gov-api.result != 'skipped')
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install psycopg2-binary python-dotenv
+      
+      - name: Determine overall status
+        id: status
+        run: |
+          freelancer_status="skipped"
+          sam_gov_status="${{ needs.sam-gov-api.outputs.status || 'skipped' }}"
+          
+          if [[ "$freelancer_status" == "error" || "$sam_gov_status" == "error" ]]; then
+            echo "overall_status=failed" >> $GITHUB_OUTPUT
+          elif [[ "$freelancer_status" == "success" && "$sam_gov_status" == "success" ]]; then
+            echo "overall_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "overall_status=partial" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Update ETL history
+        run: |
+          python -m sam_gov.services.cron.update_etl_history \
+            --record-id ${{ needs.setup-etl-history.outputs.record_id }} \
+            --status ${{ steps.status.outputs.overall_status }} \
+            --sam-gov-count ${{ needs.sam-gov-api.outputs.record_count || 0 }} \
+            --sam-gov-new ${{ needs.sam-gov-api.outputs.new_record_count || 0 }} \
+            --freelancer-count 0 \
+            --freelancer-new 0 \
+            --trigger-type ${{ needs.setup-etl-history.outputs.trigger_type }}
+        env:
+          # Database credentials
+          DBHOSTBIZ: ${{ secrets.DB_HOST }}
+          DBPORTBIZ: ${{ secrets.DB_PORT }}
+          DBNAMEBIZ: ${{ secrets.DB_NAME }}
+          DBUSERBIZ: ${{ secrets.DB_USER }}
+          DBPASSWORDBIZ: ${{ secrets.DB_PASSWORD }}

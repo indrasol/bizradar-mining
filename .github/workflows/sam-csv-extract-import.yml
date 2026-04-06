@@ -99,14 +99,12 @@ jobs:
           echo "CSV_CLASSIFIER_PROMPT_VERSION=${{ github.event.inputs.csv_classifier_prompt_version || 'opp-type-v1' }}" >> "$GITHUB_ENV"
 
       - name: Download latest SAM.gov CSV
-        working-directory: ./sam_gov
         env:
           CSV_PATH: ${{ env.CSV_PATH }}
         run: |
-          python data_extraction.py
+          python sam_gov/data_extraction.py
 
       - name: Import CSV into database (Supabase)
-        working-directory: ./sam_gov
         env:
           CSV_PATH: ${{ env.CSV_PATH }}
           CSV_PROCESS_BATCH_SIZE: ${{ env.CSV_PROCESS_BATCH_SIZE }}
@@ -126,13 +124,15 @@ jobs:
           OPENAIAPIKEYBIZ: ${{ secrets.OPENAI_API_KEY }}
           AZURE_OPENAI_API_KEY_BIZ: ${{ secrets.AZURE_OPENAI_API_KEY_BIZ }}
           AZURE_OPENAI_BASE_URL_BIZ: ${{ secrets.AZURE_OPENAI_BASE_URL_BIZ }}
+          AZURE_OPENAI_API_KEY_BIZ: ${{ secrets.AZURE_OPENAI_API_KEY_BIZ }}
+          AZURE_OPENAI_BASE_URL_BIZ: ${{ secrets.AZURE_OPENAI_BASE_URL_BIZ }}
           AZURE_OPENAI_DEPLOYMENT_BIZ: ${{ secrets.AZURE_OPENAI_DEPLOYMENT_BIZ }}
           AZURE_OPENAI_EMBEDDING_MODEL_BIZ: ${{ secrets.AZURE_OPENAI_EMBEDDING_MODEL_BIZ }}
         run: |
           if [ -n "${CSV_LIMIT}" ]; then
-            python -m sam_gov.csv_import_sam_gov --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}"
+            python -m sam_gov.services.cron.csv_import_sam_gov --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}"
           else
-            python -m sam_gov.csv_import_sam_gov --csv-path "${CSV_PATH}"
+            python -m sam_gov.services.cron.csv_import_sam_gov --csv-path "${CSV_PATH}"
           fi
 
 

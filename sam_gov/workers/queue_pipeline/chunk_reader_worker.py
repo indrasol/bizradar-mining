@@ -3,6 +3,7 @@ import io
 from typing import Optional
 
 from azure.identity import DefaultAzureCredential
+from azure.servicebus import ServiceBusClient
 from azure.storage.blob import BlobClient
 
 from sam_gov.utils.logger import get_logger
@@ -14,53 +15,77 @@ from .queue_io import run_worker_loop, send_envelope
 logger = get_logger(__name__)
 
 
-def _download_blob_text(blob_name: str, encoding: str) -> str:
+def _stream_blob_lines(blob_name: str, encoding: str):
+    """
+    Streams a blob from Azure Storage line-by-line to avoid loading the whole file into memory.
+    """
     blob = BlobClient(
         account_url=STORAGE_ACCOUNT_URL,
         container_name=STORAGE_CONTAINER,
         blob_name=blob_name,
         credential=DefaultAzureCredential(),
     )
-    raw = blob.download_blob().readall()
-    return raw.decode(encoding, errors="replace")
+
+    downloader = blob.download_blob()
+    pending = ""
+
+    for chunk in downloader.chunks():
+        decoded = chunk.decode(encoding, errors="replace")
+        data = pending + decoded
+        lines = data.splitlines(keepends=True)
+
+        if lines and not data.endswith(('\r', '\n')):
+            pending = lines.pop()
+        else:
+            pending = ""
+
+        yield from lines
+
+    if pending:
+        yield pending
 
 
 def _handle_chunk(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
-    data = envelope.data or {}
+    data = envelope.data if envelope.data is not None else {}
     blob_name = data.get("blob_name")
-    encoding = str(data.get("csv_encoding") or "utf-8")
-    start = int(data.get("chunk_start") or 1)
-    end = int(data.get("chunk_end") or start)
+    encoding = str(data.get("csv_encoding") if data.get("csv_encoding") is not None else "utf-8")
+    start = int(data.get("chunk_start") if data.get("chunk_start") is not None else 1)
+    end = int(data.get("chunk_end") if data.get("chunk_end") is not None else start)
     run_meta = {
-        "row_count": int(data.get("row_count") or 0),
-        "notice_count": int(data.get("notice_count") or 0),
+        "row_count": int(data.get("row_count") if data.get("row_count") is not None else 0),
+        "notice_count": int(data.get("notice_count") if data.get("notice_count") is not None else 0),
         "import_limit": data.get("import_limit"),
     }
-    if not blob_name:
+    if blob_name is None or not str(blob_name).strip():
         raise ValueError("chunk message missing blob_name")
 
-    csv_text = _download_blob_text(blob_name, encoding)
-    reader = csv.DictReader(io.StringIO(csv_text))
+    # Use the new streaming line generator instead of downloading everything at once
+    line_iter = _stream_blob_lines(blob_name, encoding)
+    reader = csv.DictReader(line_iter)
+    
     emitted = 0
-    for row_index, row in enumerate(reader, start=1):
-        if row_index < start:
-            continue
-        if row_index > end:
-            break
-        notice_id = str(row.get("NoticeId") or "").strip()
-        raw_env = make_envelope(
-            run_id=envelope.run_id,
-            trace_id=envelope.trace_id,
-            stage="raw_rows",
-            notice_id=notice_id,
-            source_file=envelope.source_file,
-            row_index=row_index,
-            message_id=idempotency_key(envelope.run_id, "raw", row_index, notice_id),
-            data={"row": row, "run_meta": run_meta},
-            attempt=envelope.attempt,
-        )
-        send_envelope(SERVICEBUS_FQNS, QUEUE_NAMES["raw"], raw_env)
-        emitted += 1
+    credential = DefaultAzureCredential()
+    with ServiceBusClient(fully_qualified_namespace=SERVICEBUS_FQNS, credential=credential) as client:
+        for row_index, row in enumerate(reader, start=1):
+            if row_index < start:
+                continue
+            if row_index > end:
+                break
+            nid_val = row.get("NoticeId")
+            notice_id = str(nid_val).strip() if nid_val is not None else ""
+            raw_env = make_envelope(
+                run_id=envelope.run_id,
+                trace_id=envelope.trace_id,
+                stage="raw_rows",
+                notice_id=notice_id,
+                source_file=envelope.source_file,
+                row_index=row_index,
+                message_id=idempotency_key(envelope.run_id, "raw", row_index, notice_id),
+                data={"row": row, "run_meta": run_meta},
+                attempt=envelope.attempt,
+            )
+            send_envelope(SERVICEBUS_FQNS, QUEUE_NAMES["raw"], raw_env, client=client)
+            emitted += 1
 
     logger.info(f"chunk_reader emitted={emitted} range={start}-{end} blob={blob_name}")
     return None

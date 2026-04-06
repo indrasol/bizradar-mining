@@ -59,14 +59,12 @@ jobs:
           fi
 
       - name: Download latest SAM.gov CSV
-        working-directory: ./sam_gov
         env:
           CSV_PATH: ${{ env.CSV_PATH }}
         run: |
-          python data_extraction.py
+          python sam_gov/data_extraction.py
 
       - name: Upload/enqueue CSV chunks (Service Bus)
-        working-directory: ./sam_gov
         env:
           CSV_PATH: ${{ env.CSV_PATH }}
           CSV_LIMIT: ${{ env.CSV_LIMIT }}
@@ -78,7 +76,7 @@ jobs:
           AZURE_SERVICEBUS_QUEUE_CHUNKS_BIZ: ${{ secrets.AZURE_SERVICEBUS_QUEUE_CHUNKS_BIZ }}
         run: |
           if [ -n "${CSV_LIMIT}" ]; then
-            python -m sam_gov.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
+            python -m sam_gov.services.cron.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
           else
-            python -m sam_gov.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
+            python -m sam_gov.services.cron.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
           fi

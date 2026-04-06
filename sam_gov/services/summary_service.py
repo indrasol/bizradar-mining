@@ -1,7 +1,7 @@
 import asyncio
 import os
-from sam_gov.utils.db_utils import get_db_connection
 from sam_gov.utils.logger import get_logger
+from sam_gov.utils.db_utils import get_db_connection
 from sam_gov.utils.openai_client import get_openai_client
 import aiohttp
 from typing import List, Dict, Any
