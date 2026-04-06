@@ -24,6 +24,10 @@ on:
         required: false
         default: ""
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   extract-and-enqueue:
     runs-on: ubuntu-latest
@@ -31,6 +35,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
