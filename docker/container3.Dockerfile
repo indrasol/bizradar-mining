@@ -8,5 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
+COPY sam_gov/ ./sam_gov/
+
 # Run the worker with the dispatcher
 CMD ["python", "-m", "sam_gov.workers.queue_pipeline.run_worker", "--worker", "embedding"]
