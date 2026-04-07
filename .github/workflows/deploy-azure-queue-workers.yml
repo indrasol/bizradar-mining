@@ -99,6 +99,14 @@ jobs:
       - name: Deploy/update Container Apps workers
         if: ${{ github.event.inputs.deploy_apps == 'true' }}
         run: |
+          # Fetch secrets from Key Vault to inject into Bicep
+          SUPABASE_SERVICE_KEY=$(az keyvault secret show --name SUPABASE-SERVICE-KEY-BIZ --vault-name ${{ secrets.AZ_KEYVAULT_NAME_BIZ }} --query value -o tsv)
+          SUPABASE_ANON_KEY=$(az keyvault secret show --name SUPABASE-ANON-KEY-BIZ --vault-name ${{ secrets.AZ_KEYVAULT_NAME_BIZ }} --query value -o tsv)
+          
+          # Run deployment script with injected secrets
+          export SUPABASE_SERVICE_KEY_BIZ="$SUPABASE_SERVICE_KEY"
+          export SUPABASE_ANON_KEY_BIZ="$SUPABASE_ANON_KEY"
+          
           infra/azure/deploy-worker-apps.sh
           infra/azure/configure-secrets.sh
 

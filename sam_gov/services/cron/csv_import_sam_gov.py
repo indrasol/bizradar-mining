@@ -30,6 +30,11 @@ DEBUG_LOG_PATH = os.path.abspath(
 
 
 def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: Optional[Dict[str, Any]] = None) -> None:
+    def json_serial(obj: Any) -> Any:
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        raise TypeError(f"Type {type(obj)} not serializable")
+
     try:
         payload = {
             "sessionId": DEBUG_SESSION_ID,
@@ -41,7 +46,7 @@ def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, dat
             "timestamp": int(time.time() * 1000),
         }
         with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
+            f.write(json.dumps(payload, default=json_serial, ensure_ascii=True) + "\n")
     except Exception:
         pass
 

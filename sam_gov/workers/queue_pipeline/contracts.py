@@ -1,11 +1,18 @@
 import json
 import hashlib
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional
 
 
 CURRENT_PAYLOAD_VERSION = "v1"
+
+
+def json_serial(obj: Any) -> Any:
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 
 def utc_now_iso() -> str:
@@ -32,7 +39,7 @@ class QueueEnvelope:
     data: Dict[str, Any]
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=True)
+        return json.dumps(asdict(self), default=json_serial, ensure_ascii=True)
 
     @staticmethod
     def from_json(payload: str) -> "QueueEnvelope":
