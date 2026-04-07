@@ -4,7 +4,7 @@ from threading import Event
 from typing import Callable, Optional
 
 from azure.identity import DefaultAzureCredential
-from azure.servicebus import ServiceBusClient, ServiceBusMessage
+from azure.servicebus import AutoLockRenewer, ServiceBusClient, ServiceBusMessage
 from azure.servicebus.exceptions import ServiceBusError
 
 from sam_gov.utils.logger import get_logger
@@ -90,31 +90,33 @@ def run_worker_loop(
                     continue
 
                 for msg in messages:
-                    try:
-                        raw_body = str(msg)
-                        envelope = QueueEnvelope.from_json(raw_body)
-                        if envelope.payload_version != "v1":
-                            receiver.dead_letter_message(
-                                msg,
-                                reason="UnsupportedPayloadVersion",
-                                error_description=f"payload_version={envelope.payload_version}",
+                    with AutoLockRenewer() as renewer:
+                        renewer.register(receiver, msg, max_lock_renewal_duration=600)
+                        try:
+                            raw_body = str(msg)
+                            envelope = QueueEnvelope.from_json(raw_body)
+                            if envelope.payload_version != "v1":
+                                receiver.dead_letter_message(
+                                    msg,
+                                    reason="UnsupportedPayloadVersion",
+                                    error_description=f"payload_version={envelope.payload_version}",
+                                )
+                                continue
+                            next_envelope = handler(envelope)
+                            if next_envelope is not None and output_queue:
+                                send_envelope(servicebus_fqns, output_queue, next_envelope)
+                            receiver.complete_message(msg)
+                        except Exception as exc:  # noqa: BLE001
+                            import traceback
+                            logger.error(
+                                f"{worker_name} failed for message {msg.message_id} "
+                                f"(delivery_count={getattr(msg, 'delivery_count', '?')}): {exc}\n"
+                                f"{traceback.format_exc()}"
                             )
-                            continue
-                        next_envelope = handler(envelope)
-                        if next_envelope is not None and output_queue:
-                            send_envelope(servicebus_fqns, output_queue, next_envelope)
-                        receiver.complete_message(msg)
-                    except Exception as exc:  # noqa: BLE001
-                        import traceback
-                        logger.error(
-                            f"{worker_name} failed for message {msg.message_id} "
-                            f"(delivery_count={getattr(msg, 'delivery_count', '?')}): {exc}\n"
-                            f"{traceback.format_exc()}"
-                        )
-                        delivery_count = int(getattr(msg, "delivery_count", 1) or 1)
-                        if delivery_count >= 5:
-                            receiver.dead_letter_message(
-                                msg,
-                                reason="WorkerProcessingFailed",
-                                error_description=str(exc)[:1024],
-                            )
+                            delivery_count = int(getattr(msg, "delivery_count", 1) or 1)
+                            if delivery_count >= 5:
+                                receiver.dead_letter_message(
+                                    msg,
+                                    reason="WorkerProcessingFailed",
+                                    error_description=str(exc)[:1024],
+                                )
