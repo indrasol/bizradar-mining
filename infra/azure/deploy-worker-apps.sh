@@ -73,6 +73,8 @@ create_or_update_worker() {
       --name "$app_name" \
       --image "$AZ_CONTAINER_IMAGE_BIZ" \
       --set-env-vars \
+        "SUPABASE_SERVICE_KEY_BIZ=${SUPABASE_SERVICE_KEY_BIZ:-}" \
+        "SUPABASE_ANON_KEY_BIZ=${SUPABASE_ANON_KEY_BIZ:-}" \
         "PIPELINE_WORKER_NAME_BIZ=$worker_name" \
         "SERVICEBUS_NAMESPACE_BIZ=${AZ_SERVICEBUS_NAMESPACE_BIZ}.servicebus.windows.net" \
         "PIPELINE_INPUT_QUEUE_BIZ=$in_queue" \
@@ -92,8 +94,10 @@ create_or_update_worker() {
       --min-replicas "$min_replicas" \
       --max-replicas "$max_replicas" \
       --command "python" \
-      --args "-m app.workers.queue_pipeline.run_worker --worker $worker_name" \
+      --args "-m sam_gov.workers.queue_pipeline.run_worker --worker $worker_name" \
       --env-vars \
+        "SUPABASE_SERVICE_KEY_BIZ=${SUPABASE_SERVICE_KEY_BIZ:-}" \
+        "SUPABASE_ANON_KEY_BIZ=${SUPABASE_ANON_KEY_BIZ:-}" \
         "PIPELINE_WORKER_NAME_BIZ=$worker_name" \
         "SERVICEBUS_NAMESPACE_BIZ=${AZ_SERVICEBUS_NAMESPACE_BIZ}.servicebus.windows.net" \
         "PIPELINE_INPUT_QUEUE_BIZ=$in_queue" \

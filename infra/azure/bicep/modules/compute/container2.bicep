@@ -3,6 +3,14 @@ param containerAppName string
 param containerAppsEnvironmentId string
 param containerImage string
 param keyVaultName string
+param supabaseServiceKey string {
+  @secure()
+  default: ''
+}
+param supabaseAnonKey string {
+  @secure()
+  default: ''
+}
 
 resource app 'Microsoft.App/containerApps@2025-01-01' = {
   name: containerAppName
@@ -23,13 +31,11 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
       secrets: [
         {
           name: 'supabase-service-key-biz'
-          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/SUPABASE-SERVICE-KEY-BIZ'
-          identity: 'system'
+          value: supabaseServiceKey
         }
         {
           name: 'supabase-anon-key-biz'
-          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/SUPABASE-ANON-KEY-BIZ'
-          identity: 'system'
+          value: supabaseAnonKey
         }
         {
           name: 'supabase-jwt-secret-biz'
