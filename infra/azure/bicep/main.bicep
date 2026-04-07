@@ -11,11 +11,6 @@ param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-hellowo
 param storageAccountName string = 'indraproducts'
 param keyVaultName string = 'kv-bizradar'
 
-@secure()
-param supabaseServiceKey string = ''
-@secure()
-param supabaseAnonKey string = ''
-
 // 1. Foundation: Logs + Cluster
 module foundation './modules/foundation.bicep' = {
   name: 'foundation'
@@ -51,8 +46,6 @@ module container1 './modules/compute/container1.bicep' = {
     containerAppsEnvironmentId: foundation.outputs.containerAppsEnvironmentId
     containerImage: containerImage
     keyVaultName: keyVaultName
-    supabaseServiceKey: supabaseServiceKey
-    supabaseAnonKey: supabaseAnonKey
   }
 }
 
@@ -65,8 +58,6 @@ module container2 './modules/compute/container2.bicep' = {
     containerAppsEnvironmentId: foundation.outputs.containerAppsEnvironmentId
     containerImage: containerImage
     keyVaultName: keyVaultName
-    supabaseServiceKey: supabaseServiceKey
-    supabaseAnonKey: supabaseAnonKey
   }
 }
 
@@ -79,8 +70,6 @@ module container3 './modules/compute/container3.bicep' = {
     containerAppsEnvironmentId: foundation.outputs.containerAppsEnvironmentId
     containerImage: containerImage
     keyVaultName: keyVaultName
-    supabaseServiceKey: supabaseServiceKey
-    supabaseAnonKey: supabaseAnonKey
   }
 }
 
