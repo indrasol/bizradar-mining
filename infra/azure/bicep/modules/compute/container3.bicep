@@ -3,14 +3,11 @@ param containerAppName string
 param containerAppsEnvironmentId string
 param containerImage string
 param keyVaultName string
-param supabaseServiceKey string {
-  @secure()
-  default: ''
-}
-param supabaseAnonKey string {
-  @secure()
-  default: ''
-}
+@secure()
+param supabaseServiceKey string = ''
+
+@secure()
+param supabaseAnonKey string = ''
 
 resource app 'Microsoft.App/containerApps@2025-01-01' = {
   name: containerAppName
