@@ -2,7 +2,7 @@ name: "[App] Container 3 CI/CD"
 on:
   push:
     paths:
-      - 'sam_gov/workers/queue_pipeline/embedding_worker.py'
+      - 'sam_gov/workers/queue_pipeline/**'
       - 'requirements.txt'
       - 'docker/container3.Dockerfile'
   workflow_dispatch:

@@ -2,7 +2,7 @@ name: "[App] Container 2 CI/CD"
 on:
   push:
     paths:
-      - 'sam_gov/workers/queue_pipeline/classify_enrich_worker.py'
+      - 'sam_gov/workers/queue_pipeline/**'
       - 'requirements.txt'
       - 'docker/container2.Dockerfile'
   workflow_dispatch:

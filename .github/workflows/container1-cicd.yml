@@ -2,12 +2,7 @@ name: "[App] Container 1 CI/CD"
 on:
   push:
     paths:
-      - 'sam_gov/workers/queue_pipeline/pipeline_core_worker.py'
-      - 'sam_gov/workers/queue_pipeline/chunk_reader_worker.py'
-      - 'sam_gov/workers/queue_pipeline/normalize_dedupe_worker.py'
-      - 'sam_gov/workers/queue_pipeline/thread_match_worker.py'
-      - 'sam_gov/workers/queue_pipeline/persist_worker.py'
-      - 'sam_gov/workers/queue_pipeline/run_finalizer_worker.py'
+      - 'sam_gov/workers/queue_pipeline/**'
       - 'requirements.txt'
       - 'docker/container1.Dockerfile'
   workflow_dispatch:
