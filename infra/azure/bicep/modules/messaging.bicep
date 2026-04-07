@@ -24,6 +24,7 @@ resource queues 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = [f
   name: name
   properties: {
     maxDeliveryCount: 5
+    lockDuration: 'PT5M'
   }
 }]
 
