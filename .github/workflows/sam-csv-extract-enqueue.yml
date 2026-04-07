@@ -1,10 +1,6 @@
 name: SAM CSV Extract and Enqueue
 
 on:
-  # GitHub Actions cron uses UTC. 08:00 UTC ~= 12:00 AM PST.
-  # During PDT months this will run at 1:00 AM local time unless adjusted.
-  schedule:
-    - cron: "0 8 * * *"
   workflow_dispatch:
     inputs:
       csv_path:
