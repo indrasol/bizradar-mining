@@ -4,7 +4,6 @@ from sam_gov.utils.db_utils import get_supabase_connection
 
 
 PAGE_SIZE = 1000
-THREAD_ID_CHUNK_SIZE = 300
 
 
 def _fetch_all_rows(supabase, table: str, columns: str) -> list[dict]:
@@ -28,24 +27,6 @@ def _fetch_all_rows(supabase, table: str, columns: str) -> list[dict]:
     return rows
 
 
-def _fetch_existing_thread_ids(supabase, thread_ids: set[str]) -> set[str]:
-    if not thread_ids:
-        return set()
-    out: set[str] = set()
-    ordered_ids = sorted(thread_ids)
-    for idx in range(0, len(ordered_ids), THREAD_ID_CHUNK_SIZE):
-        chunk = ordered_ids[idx: idx + THREAD_ID_CHUNK_SIZE]
-        response = (
-            supabase
-            .table("ai_opportunity_threads")
-            .select("thread_id")
-            .in_("thread_id", chunk)
-            .execute()
-        )
-        rows = getattr(response, "data", None) or []
-        out.update(str(r.get("thread_id")) for r in rows if r.get("thread_id"))
-    return out
-
 
 def main() -> None:
     supabase = get_supabase_connection(use_service_key=True)
@@ -61,12 +42,12 @@ def main() -> None:
     latest_counts: dict[str, int] = defaultdict(int)
     all_thread_ids: set[str] = set()
     duplicate_key_counter: Counter[tuple] = Counter()
-    orphan_candidates = 0
+    orphan_versions = 0
 
     for row in versions:
         thread_id = str(row.get("thread_id") or "").strip()
         if not thread_id:
-            orphan_candidates += 1
+            orphan_versions += 1
         else:
             all_thread_ids.add(thread_id)
             if bool(row.get("is_latest_in_thread", False)):
@@ -79,15 +60,6 @@ def main() -> None:
             str(row.get("source_archive_date") or ""),
         )
         duplicate_key_counter[duplicate_key] += 1
-
-    existing_thread_ids = _fetch_existing_thread_ids(supabase, all_thread_ids)
-
-    orphan_versions = orphan_candidates + sum(
-        1
-        for row in versions
-        if str(row.get("thread_id") or "").strip()
-        and str(row.get("thread_id") or "").strip() not in existing_thread_ids
-    )
 
     latest_violations = [thread_id for thread_id, count in latest_counts.items() if count != 1]
     missing_latest_threads = sorted(all_thread_ids - set(latest_counts.keys()))

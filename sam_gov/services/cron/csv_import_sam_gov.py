@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import uuid
 import hashlib
 import time
 import pandas as pd
@@ -223,7 +224,6 @@ def _coerce_row_for_supabase(row: Dict[str, Any]) -> Dict[str, Any]:
         pass
     return safe_row
 
-_VERSIONS_TABLE_AVAILABLE: Optional[bool] = None
 
 
 def _progress_line(prefix: str, current: int, total: int):
@@ -359,48 +359,6 @@ def _fetch_versions_by_thread_ids_sb(
         return {}
 
 
-def _version_table_available(supabase) -> bool:
-    """Check once whether version table exists in this environment."""
-    global _VERSIONS_TABLE_AVAILABLE
-    if _VERSIONS_TABLE_AVAILABLE is not None:
-        return _VERSIONS_TABLE_AVAILABLE
-    try:
-        supabase.table("ai_enhanced_opportunity_versions").select("version_id").limit(1).execute()
-        _VERSIONS_TABLE_AVAILABLE = True
-    except Exception:
-        _VERSIONS_TABLE_AVAILABLE = False
-    return _VERSIONS_TABLE_AVAILABLE
-
-
-def _build_latest_notice_payload(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Build latest snapshot payload for ai_enhanced_opportunities."""
-    allowed_columns = {
-        "notice_id",
-        "solicitation_number",
-        "title",
-        "department",
-        "naics_code",
-        "published_date",
-        "response_date",
-        "description",
-        "url",
-        "point_of_contact",
-        "active",
-        "sub_departments",
-        "objective",
-        "expected_outcome",
-        "eligibility",
-        "key_facts",
-        "due_date",
-        "funding",
-        "embedding_text",
-        "embedding",
-        "embedding_model",
-        "embedding_version",
-    }
-    payload = {k: v for k, v in row.items() if k in allowed_columns}
-    return _coerce_row_for_supabase(payload)
-
 
 def _build_version_payload(row: Dict[str, Any]) -> Dict[str, Any]:
     """Build version payload for ai_enhanced_opportunity_versions."""
@@ -473,9 +431,7 @@ def insert_data(rows):
     updated = 0
     total_rows = len(rows)
     last_pct = -1
-    has_versions_table = _version_table_available(supabase)
 
-    latest_payloads: List[Dict[str, Any]] = []
     version_payloads: List[Dict[str, Any]] = []
     thread_ids_touched: set = set()
     seen_rows: List[Dict[str, Any]] = []
@@ -489,7 +445,6 @@ def insert_data(rows):
         message="Insert phase started",
         data={
             "rowCount": len(rows),
-            "hasVersionsTable": has_versions_table,
             "batchSize": DB_UPSERT_BATCH_SIZE,
         },
     )
@@ -557,19 +512,10 @@ def insert_data(rows):
             "metadata_simhash": row.get("metadata_simhash"),
         })
 
-        latest_payloads.append(_build_latest_notice_payload(row))
-        if has_versions_table and thread_id:
+        if thread_id:
             version_payloads.append(_build_version_payload(row))
 
     try:
-        # Guard against duplicate records in a single CSV batch.
-        dedup_latest: Dict[str, Dict[str, Any]] = {}
-        for payload in latest_payloads:
-            n_id = payload.get("notice_id")
-            if n_id:
-                dedup_latest[n_id] = payload
-        latest_payloads = list(dedup_latest.values())
-
         dedup_versions: Dict[tuple, Dict[str, Any]] = {}
         for payload in version_payloads:
             key = (
@@ -582,18 +528,21 @@ def insert_data(rows):
         version_payloads = list(dedup_versions.values())
 
         processed = 0
-        for batch in _chunked(latest_payloads, DB_UPSERT_BATCH_SIZE):
+        for batch in _chunked(version_payloads, DB_UPSERT_BATCH_SIZE):
             try:
-                supabase.table("ai_enhanced_opportunities").upsert(batch, on_conflict="notice_id").execute()
+                supabase.table("ai_enhanced_opportunity_versions").upsert(
+                    batch,
+                    on_conflict="notice_id,source_posted_at,source_archive_type,source_archive_date",
+                ).execute()
                 updated += len(batch)
             except Exception as e:
-                logger.error(f"Error upserting latest batch size={len(batch)}: {e}")
+                logger.error(f"Error upserting version batch size={len(batch)}: {e}")
                 # region agent log
                 _debug_log(
                     run_id="import-run",
-                    hypothesis_id="H3",
+                    hypothesis_id="H4",
                     location="csv_import_sam_gov.py:insert_data",
-                    message="Latest upsert batch failed",
+                    message="Version upsert batch failed",
                     data={
                         "batchSize": len(batch),
                         "errorType": type(e).__name__,
@@ -608,93 +557,55 @@ def insert_data(rows):
                 _progress_line("Database import progress", processed, total_rows)
                 last_pct = pct
 
-        if has_versions_table and version_payloads:
-            for batch in _chunked(version_payloads, DB_UPSERT_BATCH_SIZE):
+        # Set is_latest_in_thread flag using Python-side ordering.
+        for thread_id_chunk in _chunked(list(thread_ids_touched), 100):
+            try:
                 try:
-                    supabase.table("ai_enhanced_opportunity_versions").upsert(
-                        batch,
-                        on_conflict="notice_id,source_posted_at,source_archive_type,source_archive_date",
-                    ).execute()
-                except Exception as e:
-                    logger.error(f"Error upserting version batch size={len(batch)}: {e}")
-                    # region agent log
-                    _debug_log(
-                        run_id="import-run",
-                        hypothesis_id="H4",
-                        location="csv_import_sam_gov.py:insert_data",
-                        message="Version upsert batch failed",
-                        data={
-                            "batchSize": len(batch),
-                            "errorType": type(e).__name__,
-                            "errorText": str(e)[:240],
-                        },
+                    q = (
+                        supabase
+                        .table("ai_enhanced_opportunity_versions")
+                        .select(
+                            "version_id, thread_id, source_archive_date, source_posted_at, ingested_at, "
+                            "opportunity_type, opportunity_type_confidence"
+                        )
+                        .in_("thread_id", thread_id_chunk)
+                        .order("source_archive_date", desc=True, nullsfirst=False)
+                        .order("source_posted_at", desc=True, nullsfirst=False)
+                        .order("ingested_at", desc=True)
+                        .execute()
                     )
-                    # endregion
-
-            # Set latest-per-thread atomically through RPC.
-            for thread_id_chunk in _chunked(list(thread_ids_touched), 100):
-                try:
+                except Exception:
+                    q = (
+                        supabase
+                        .table("ai_enhanced_opportunity_versions")
+                        .select("version_id, thread_id, source_archive_date, source_posted_at, ingested_at")
+                        .in_("thread_id", thread_id_chunk)
+                        .order("source_archive_date", desc=True, nullsfirst=False)
+                        .order("source_posted_at", desc=True, nullsfirst=False)
+                        .order("ingested_at", desc=True)
+                        .execute()
+                    )
+                vrows = getattr(q, "data", None) or []
+                best_by_thread: Dict[str, Dict[str, Any]] = {}
+                for vr in vrows:
+                    t_id = vr.get("thread_id")
+                    if t_id and t_id not in best_by_thread:
+                        best_by_thread[t_id] = vr
+                for t_id, latest_row in best_by_thread.items():
+                    best_version_id = latest_row.get("version_id")
                     try:
-                        q = (
-                            supabase
-                            .table("ai_enhanced_opportunity_versions")
-                            .select(
-                                "version_id, thread_id, source_archive_date, source_posted_at, ingested_at, "
-                                "opportunity_type, opportunity_type_confidence"
-                            )
-                            .in_("thread_id", thread_id_chunk)
-                            .order("source_archive_date", desc=True, nullsfirst=False)
-                            .order("source_posted_at", desc=True, nullsfirst=False)
-                            .order("ingested_at", desc=True)
-                            .execute()
-                        )
-                    except Exception:
-                        q = (
-                            supabase
-                            .table("ai_enhanced_opportunity_versions")
-                            .select("version_id, thread_id, source_archive_date, source_posted_at, ingested_at")
-                            .in_("thread_id", thread_id_chunk)
-                            .order("source_archive_date", desc=True, nullsfirst=False)
-                            .order("source_posted_at", desc=True, nullsfirst=False)
-                            .order("ingested_at", desc=True)
-                            .execute()
-                        )
-                    vrows = getattr(q, "data", None) or []
-                    best_by_thread: Dict[str, Dict[str, Any]] = {}
-                    for vr in vrows:
-                        t_id = vr.get("thread_id")
-                        if t_id and t_id not in best_by_thread:
-                            best_by_thread[t_id] = vr
-                    for t_id, latest_row in best_by_thread.items():
-                        v_id = latest_row.get("version_id")
-                        try:
-                            supabase.rpc("rpc_set_latest_version", {"p_thread_id": t_id, "p_version_id": v_id}).execute()
-                            label = _sanitize_label(latest_row.get("opportunity_type"), default="UNKNOWN")
-                            confidence = _safe_float(latest_row.get("opportunity_type_confidence"), 0.0)
-                            current_state = (
-                                supabase
-                                .table("ai_opportunity_threads")
-                                .select("current_opportunity_type")
-                                .eq("thread_id", t_id)
-                                .limit(1)
-                                .execute()
-                            )
-                            current_rows = getattr(current_state, "data", None) or []
-                            prev_label = _sanitize_label(current_rows[0].get("current_opportunity_type"), default="") if current_rows else ""
-                            thread_update_payload = {
-                                "current_opportunity_type": label,
-                                "current_type_confidence": confidence,
-                                "current_type_version_id": v_id,
-                            }
-                            if prev_label and prev_label != label:
-                                thread_update_payload["type_changed_at"] = datetime.utcnow().isoformat()
-                            supabase.table("ai_opportunity_threads").update(thread_update_payload).eq("thread_id", t_id).execute()
-                        except Exception as ee:
-                            logger.error(f"rpc_set_latest_version failed thread={t_id}: {ee}")
-                except Exception as e:
-                    logger.error(f"Failed to refresh latest flags for thread chunk: {e}")
+                        supabase.table("ai_enhanced_opportunity_versions") \
+                            .update({"is_latest_in_thread": False}) \
+                            .eq("thread_id", t_id).neq("version_id", best_version_id).execute()
+                        supabase.table("ai_enhanced_opportunity_versions") \
+                            .update({"is_latest_in_thread": True}) \
+                            .eq("version_id", best_version_id).execute()
+                    except Exception as ee:
+                        logger.error(f"Failed to set is_latest_in_thread for thread={t_id}: {ee}")
+            except Exception as e:
+                logger.error(f"Failed to refresh latest flags for thread chunk: {e}")
 
-        inserted = max(0, len(latest_payloads) - skipped)
+        inserted = max(0, len(version_payloads) - skipped)
         _progress_line("Database import progress", total_rows, total_rows)
         # region agent log
         _debug_log(
@@ -706,7 +617,6 @@ def insert_data(rows):
                 "inserted": inserted,
                 "updated": updated,
                 "skipped": skipped,
-                "latestPayloads": len(latest_payloads),
                 "versionPayloads": len(version_payloads),
                 "threadTouched": len(thread_ids_touched),
             },
@@ -1573,29 +1483,17 @@ def _ensure_thread_id(
     assignment: Dict[str, Any],
     thread_id_cache: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
-    """Get existing matched thread_id or create/reuse one by thread_key."""
+    """Get existing thread_id from ai_enhanced_opportunity_versions by thread_key, or generate a new UUID."""
     if assignment.get("thread_id"):
         return assignment["thread_id"]
     thread_key = safe_string(row.get("thread_key")) or f"notice:{row.get('notice_id')}"
     if thread_id_cache and thread_key in thread_id_cache:
         return thread_id_cache[thread_key]
-    payload = {
-        "thread_key": thread_key,
-        "canonical_solicitation_number": row.get("solicitation_number"),
-        "canonical_title": row.get("title"),
-        "canonical_department": row.get("department"),
-        "canonical_naics_code": row.get("naics_code"),
-        "latest_notice_id": row.get("notice_id"),
-    }
     try:
-        _run_with_supabase_retries(
-            lambda: supabase.table("ai_opportunity_threads").upsert(payload, on_conflict="thread_key").execute(),
-            label=f"ensure_thread_upsert notice={row.get('notice_id')}",
-        )
         q = _run_with_supabase_retries(
             lambda: (
                 supabase
-                .table("ai_opportunity_threads")
+                .table("ai_enhanced_opportunity_versions")
                 .select("thread_id")
                 .eq("thread_key", thread_key)
                 .limit(1)
@@ -1604,23 +1502,10 @@ def _ensure_thread_id(
             label=f"ensure_thread_select notice={row.get('notice_id')}",
         )
         rows = getattr(q, "data", None) or []
-        if rows:
-            out = rows[0].get("thread_id")
-            if out and thread_id_cache is not None:
-                thread_id_cache[thread_key] = out
-            return out
-        # region agent log
-        _debug_log(
-            run_id="import-run",
-            hypothesis_id="H2",
-            location="csv_import_sam_gov.py:_ensure_thread_id",
-            message="Thread select returned no rows",
-            data={
-                "noticeId": row.get("notice_id"),
-                "threadKey": thread_key[:120],
-            },
-        )
-        # endregion
+        thread_id = rows[0].get("thread_id") if rows else str(uuid.uuid4())
+        if thread_id_cache is not None:
+            thread_id_cache[thread_key] = thread_id
+        return thread_id
     except Exception as e:
         logger.error(f"Failed to ensure thread for {row.get('notice_id')}: {e}")
         # region agent log
@@ -1637,7 +1522,7 @@ def _ensure_thread_id(
             },
         )
         # endregion
-    return None
+    return str(uuid.uuid4())
 
 def process_csv_row(row: Dict[str, str]) -> Dict[str, Any]:
     """
@@ -2029,7 +1914,7 @@ async def process_csv_file(
                 "error": result.get("error")
             }
             
-            # Supabase vector refresh: fill embeddings for rows missing them (full reindex style)
+            # Supabase vector refresh: fill embeddings for latest versions missing them.
             try:
                 supabase = get_supabase_connection(use_service_key=True)
                 PAGE = 200
@@ -2037,12 +1922,13 @@ async def process_csv_file(
                 while True:
                     q = (
                         supabase
-                        .table("ai_enhanced_opportunities")
+                        .table("ai_enhanced_opportunity_versions")
                         .select(
-                            "id, notice_id, title, department, naics_code, description, url, "
+                            "version_id, notice_id, title, department, naics_code, description, url, "
                             "objective, expected_outcome, eligibility, key_facts, response_date, due_date, "
                             "sub_departments, funding, point_of_contact, published_date, active, embedding"
                         )
+                        .eq("is_latest_in_thread", True)
                         .is_("embedding", None)
                         .limit(PAGE)
                     ).execute()
@@ -2078,7 +1964,7 @@ async def process_csv_file(
                                 return None
                             emb = await generate_embedding(full_text)
                             return {
-                                "id": r["id"],
+                                "version_id": r["version_id"],
                                 "embedding_text": full_text[:20000],
                                 "embedding": emb,
                                 "embedding_model": EMBED_MODEL,
@@ -2094,7 +1980,7 @@ async def process_csv_file(
                             updates.append(u)
 
                     if updates:
-                        supabase.table("ai_enhanced_opportunities").upsert(updates, on_conflict="id").execute()
+                        supabase.table("ai_enhanced_opportunity_versions").upsert(updates, on_conflict="version_id").execute()
                         total_refreshed += len(updates)
 
                 db_results["indexed_count"] = total_refreshed
@@ -2111,8 +1997,9 @@ async def process_csv_file(
                     if latest_notice_ids:
                         active_resp = (
                             supabase
-                            .table("ai_enhanced_opportunities")
+                            .table("ai_enhanced_opportunity_versions")
                             .select("notice_id")
+                            .eq("is_latest_in_thread", True)
                             .eq("active", True)
                             .execute()
                         )
@@ -2124,7 +2011,10 @@ async def process_csv_file(
                             CHUNK = 500
                             for i in range(0, len(to_deactivate), CHUNK):
                                 chunk = to_deactivate[i:i+CHUNK]
-                                supabase.table("ai_enhanced_opportunities").update({"active": False}).in_("notice_id", chunk).execute()
+                                supabase.table("ai_enhanced_opportunity_versions") \
+                                    .update({"active": False}) \
+                                    .in_("notice_id", chunk) \
+                                    .eq("is_latest_in_thread", True).execute()
                                 marked_inactive += len(chunk)
                         db_results["marked_inactive"] = marked_inactive
                     else:
