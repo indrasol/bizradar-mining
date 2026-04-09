@@ -1334,8 +1334,25 @@ def _resolve_thread_assignment(supabase, row: Dict[str, Any]) -> Dict[str, Any]:
             label=f"rpc_find_thread_candidates notice={row.get('notice_id')}",
         )
         candidates = getattr(resp, "data", None) or []
-    except Exception:
+    except Exception as _rpc_err:
         candidates = []
+        # region agent log
+        try:
+            import json as _json, time as _time
+            with open("debug-3bbbee.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps({"sessionId":"3bbbee","hypothesisId":"H1","location":"csv_import_sam_gov.py:_resolve_thread_assignment","message":"rpc_find_thread_candidates threw exception","data":{"noticeId":row.get("notice_id"),"error":str(_rpc_err)[:200]},"timestamp":int(_time.time()*1000)}) + "\n")
+        except Exception:
+            pass
+        # endregion
+
+    # region agent log
+    try:
+        import json as _json, time as _time
+        with open("debug-3bbbee.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId":"3bbbee","hypothesisId":"H1","location":"csv_import_sam_gov.py:_resolve_thread_assignment","message":"rpc candidates result","data":{"noticeId":row.get("notice_id"),"candidateCount":len(candidates),"firstCandidate":candidates[0] if candidates else None},"timestamp":int(_time.time()*1000)}) + "\n")
+    except Exception:
+        pass
+    # endregion
 
     if not candidates:
         return {
@@ -1475,6 +1492,15 @@ def _resolve_thread_assignment(supabase, row: Dict[str, Any]) -> Dict[str, Any]:
             "basis": basis,
         },
     }
+    # region agent log
+    try:
+        import json as _json, time as _time
+        _result = {"thread_id": best.get("thread_id"), "match_method": method, "match_score": round(best_score, 5), "basis": basis}
+        with open("debug-3bbbee.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps({"sessionId":"3bbbee","hypothesisId":"H2","location":"csv_import_sam_gov.py:_resolve_thread_assignment","message":"thread matched to existing","data":{"noticeId":row.get("notice_id"),"result":_result},"timestamp":int(_time.time()*1000)}) + "\n")
+    except Exception:
+        pass
+    # endregion
 
 
 def _ensure_thread_id(
@@ -1503,6 +1529,14 @@ def _ensure_thread_id(
         )
         rows = getattr(q, "data", None) or []
         thread_id = rows[0].get("thread_id") if rows else str(uuid.uuid4())
+        # region agent log
+        try:
+            import json as _json, time as _time
+            with open("debug-3bbbee.log", "a", encoding="utf-8") as _f:
+                _f.write(_json.dumps({"sessionId":"3bbbee","hypothesisId":"H3","location":"csv_import_sam_gov.py:_ensure_thread_id","message":"thread_id resolution","data":{"noticeId":row.get("notice_id"),"threadKey":thread_key[:80],"foundExisting":bool(rows),"threadId":str(thread_id)},"timestamp":int(_time.time()*1000)}) + "\n")
+        except Exception:
+            pass
+        # endregion
         if thread_id_cache is not None:
             thread_id_cache[thread_key] = thread_id
         return thread_id
