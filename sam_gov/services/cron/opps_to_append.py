@@ -5,10 +5,7 @@ from typing import Dict, List, Set
 import pandas as pd
 from supabase import Client, create_client
 
-try:
-    from app.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY
-except Exception:
-    from config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY
+from sam_gov.config.settings import SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY
 
 
 DEFAULT_CSV_PATH = r"C:\Users\rdine\Downloads\ContractOpportunitiesFullCSV (8).csv"
@@ -80,7 +77,7 @@ def _read_csv_notice_ids(csv_path: str) -> Dict[str, object]:
 
 def _existing_notice_ids(supabase: Client, notice_ids: Set[str], chunk_size: int = 500) -> Set[str]:
     """
-    Query existing notice IDs from ai_enhanced_opportunities in chunks.
+    Query existing notice IDs from ai_enhanced_opportunity_versions (latest versions only) in chunks.
     """
     existing: Set[str] = set()
     id_list = list(notice_ids)
@@ -90,9 +87,10 @@ def _existing_notice_ids(supabase: Client, notice_ids: Set[str], chunk_size: int
         if not chunk:
             continue
         response = (
-            supabase.table("ai_enhanced_opportunities")
+            supabase.table("ai_enhanced_opportunity_versions")
             .select("notice_id")
             .in_("notice_id", chunk)
+            .eq("is_latest_in_thread", True)
             .execute()
         )
         rows = getattr(response, "data", None) or []
@@ -107,7 +105,7 @@ def _existing_notice_ids(supabase: Client, notice_ids: Set[str], chunk_size: int
 def estimate_rows_to_append(csv_path: str) -> Dict[str, int]:
     """
     Estimate how many rows would be newly added (new notice_id values)
-    to public.ai_enhanced_opportunities.
+    to public.ai_enhanced_opportunity_versions.
     """
     csv_stats = _read_csv_notice_ids(csv_path)
     notice_ids = csv_stats.pop("_ids")
@@ -133,7 +131,7 @@ def estimate_rows_to_append(csv_path: str) -> Dict[str, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Estimate new rows for public.ai_enhanced_opportunities from CSV NoticeId values."
+        description="Estimate new rows for public.ai_enhanced_opportunity_versions from CSV NoticeId values."
     )
     parser.add_argument(
         "--csv-path",
@@ -143,14 +141,14 @@ def main() -> None:
     args = parser.parse_args()
 
     result = estimate_rows_to_append(args.csv_path)
-    print("=== ai_enhanced_opportunities append estimator ===")
+    print("=== ai_enhanced_opportunity_versions append estimator ===")
     print(f"CSV: {args.csv_path}")
     print(f"Raw CSV rows: {result['raw_rows']}")
     print(f"Rows with blank/null NoticeId: {result['blank_notice_rows']}")
     print(f"Rows with NoticeId: {result['rows_with_notice']}")
     print(f"Duplicate NoticeId rows in CSV: {result['duplicate_notice_rows']}")
     print(f"Unique NoticeId values in CSV: {result['unique_notice_ids']}")
-    print(f"Existing NoticeId values in table: {result['existing_notice_ids']}")
+    print(f"Existing NoticeId values in ai_enhanced_opportunity_versions: {result['existing_notice_ids']}")
     print(f"Estimated new rows to append: {result['estimated_new_rows']}")
 
 

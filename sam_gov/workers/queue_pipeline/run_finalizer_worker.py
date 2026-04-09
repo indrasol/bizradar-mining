@@ -4,10 +4,7 @@ from typing import Dict, Optional, Set
 
 from sam_gov.utils.logger import get_logger
 from sam_gov.utils.db_utils import get_supabase_connection
-try:
-    from sam_gov.config.settings import env_int
-except Exception:
-    from sam_gov.config.settings import env_int
+from sam_gov.config.settings import env_int
 from .config import SERVICEBUS_FQNS, QUEUE_NAMES
 from .contracts import QueueEnvelope
 from .queue_io import run_worker_loop
@@ -43,8 +40,9 @@ def _mark_inactive_notices(latest_notice_ids: set[str]) -> int:
     supabase = _get_supabase()
     active_resp = (
         supabase
-        .table("ai_enhanced_opportunities")
+        .table("ai_enhanced_opportunity_versions")
         .select("notice_id")
+        .eq("is_latest_in_thread", True)
         .eq("active", True)
         .execute()
     )
@@ -61,9 +59,10 @@ def _mark_inactive_notices(latest_notice_ids: set[str]) -> int:
         chunk = to_deactivate[idx: idx + chunk_size]
         (
             supabase
-            .table("ai_enhanced_opportunities")
+            .table("ai_enhanced_opportunity_versions")
             .update({"active": False})
             .in_("notice_id", chunk)
+            .eq("is_latest_in_thread", True)
             .execute()
         )
         marked_inactive += len(chunk)
