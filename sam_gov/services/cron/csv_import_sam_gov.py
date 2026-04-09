@@ -1334,15 +1334,8 @@ def _resolve_thread_assignment(supabase, row: Dict[str, Any]) -> Dict[str, Any]:
             label=f"rpc_find_thread_candidates notice={row.get('notice_id')}",
         )
         candidates = getattr(resp, "data", None) or []
-    except Exception as _rpc_err:
+    except Exception:
         candidates = []
-        # region agent log
-        logger.warning(f"[DBG-3bbbee H1] rpc_find_thread_candidates EXCEPTION notice={row.get('notice_id')} err={str(_rpc_err)[:200]}")
-        # endregion
-
-    # region agent log
-    logger.info(f"[DBG-3bbbee H1] rpc candidates notice={row.get('notice_id')} count={len(candidates)} first={candidates[0] if candidates else None}")
-    # endregion
 
     if not candidates:
         return {
@@ -1482,9 +1475,6 @@ def _resolve_thread_assignment(supabase, row: Dict[str, Any]) -> Dict[str, Any]:
             "basis": basis,
         },
     }
-    # region agent log
-    logger.info(f"[DBG-3bbbee H2] thread matched notice={row.get('notice_id')} thread_id={best.get('thread_id')} method={method} score={round(best_score,5)} basis={basis}")
-    # endregion
 
 
 def _ensure_thread_id(
@@ -1513,9 +1503,6 @@ def _ensure_thread_id(
         )
         rows = getattr(q, "data", None) or []
         thread_id = rows[0].get("thread_id") if rows else str(uuid.uuid4())
-        # region agent log
-        logger.info(f"[DBG-3bbbee H3] ensure_thread_id notice={row.get('notice_id')} thread_key={thread_key[:60]} foundExisting={bool(rows)} thread_id={thread_id}")
-        # endregion
         if thread_id_cache is not None:
             thread_id_cache[thread_key] = thread_id
         return thread_id
