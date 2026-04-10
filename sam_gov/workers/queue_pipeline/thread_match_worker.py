@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from sam_gov.services.cron.csv_import_sam_gov import _resolve_thread_assignment, _ensure_thread_id, _coerce_row_for_supabase
 from sam_gov.utils.db_utils import get_supabase_connection
@@ -11,7 +11,7 @@ _THREAD_CACHE: Dict[str, str] = {}
 _SUPABASE = get_supabase_connection(use_service_key=True)
 
 
-def _handle_normalized(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
+def _process_one(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
     payload = envelope.data if envelope.data is not None else {}
     row = payload.get("row")
     run_meta = payload.get("run_meta") if isinstance(payload.get("run_meta"), dict) else {}
@@ -43,11 +43,33 @@ def _handle_normalized(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
     )
 
 
+def _handle_normalized_batch(envelopes: List[QueueEnvelope]) -> List[Optional[QueueEnvelope]]:
+    """
+    Process envelopes sequentially to preserve _THREAD_CACHE ordering.
+
+    Sequential processing is critical: when two versions of the same opportunity
+    arrive in the same batch, the first row writes its thread_id to _THREAD_CACHE
+    so the second row gets a cache hit and is assigned the same thread — preventing
+    duplicate threads. Concurrent processing would cause a race on the cache write.
+    """
+    results: List[Optional[QueueEnvelope]] = []
+    for envelope in envelopes:
+        try:
+            results.append(_process_one(envelope))
+        except Exception as exc:  # noqa: BLE001
+            from sam_gov.utils.logger import get_logger
+            get_logger(__name__).error(
+                f"thread_match error for row_index={envelope.row_index}: {exc}"
+            )
+            results.append(None)
+    return results
+
+
 def run() -> None:
     run_worker_loop(
         servicebus_fqns=SERVICEBUS_FQNS,
         input_queue=QUEUE_NAMES["normalized"],
         output_queue=QUEUE_NAMES["threaded"],
         worker_name="thread_match",
-        handler=_handle_normalized,
+        batch_handler=_handle_normalized_batch,
     )

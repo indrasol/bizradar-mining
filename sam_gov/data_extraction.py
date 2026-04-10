@@ -1,5 +1,6 @@
-import time
 import os
+import tempfile
+import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -39,6 +40,48 @@ def scroll_terms_and_accept(page):
         timeout=15000,
     )
     page.get_by_role("button", name="Accept").click()
+
+def _reverse_csv_rows(dest_path: Path) -> None:
+    """
+    Reverse the data rows of the downloaded CSV in-place, keeping the header first.
+
+    Uses readlines() instead of csv.reader to avoid per-cell Python object overhead.
+    Peak RAM is ~1.05× file size — safe for the GitHub Actions 7 GB standard runner
+    even for multi-GB SAM.gov exports.
+
+    Writes to a temp file on the same filesystem then swaps atomically via os.replace()
+    so the original is never left in a partially-written state on failure.
+    """
+    encodings = ["utf-8", "latin-1", "cp1252", "iso-8859-1"]
+    detected_encoding = "utf-8"
+    for enc in encodings:
+        try:
+            with open(dest_path, "r", encoding=enc) as _f:
+                _f.read(4096)
+            detected_encoding = enc
+            break
+        except UnicodeDecodeError:
+            continue
+
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dest_path.parent, suffix=".tmp")
+    try:
+        with open(dest_path, "r", encoding=detected_encoding, errors="replace") as fh:
+            header = fh.readline()
+            lines = fh.readlines()
+
+        with os.fdopen(tmp_fd, "w", encoding=detected_encoding) as fh:
+            fh.write(header)
+            for line in reversed(lines):
+                fh.write(line)
+
+        os.replace(tmp_path, dest_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
 
 def main():
     csv_env = os.getenv("CSV_PATH")
@@ -98,6 +141,8 @@ def main():
             raise RuntimeError(f"Failed to start download after retries: {last_error}")
 
         download.save_as(str(dest_path))
+
+        _reverse_csv_rows(dest_path)
 
         # print(f"Saved: {dest_path}")
 

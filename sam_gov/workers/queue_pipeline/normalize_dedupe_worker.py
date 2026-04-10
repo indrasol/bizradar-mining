@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from sam_gov.services.cron.csv_import_sam_gov import process_csv_row
 from sam_gov.utils.logger import get_logger
@@ -10,7 +10,7 @@ from .queue_io import run_worker_loop
 logger = get_logger(__name__)
 
 
-def _handle_raw(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
+def _normalize_envelope(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
     payload = envelope.data if envelope.data is not None else {}
     row = payload.get("row")
     run_meta = payload.get("run_meta") if isinstance(payload.get("run_meta"), dict) else {}
@@ -37,11 +37,22 @@ def _handle_raw(envelope: QueueEnvelope) -> Optional[QueueEnvelope]:
     )
 
 
+def _handle_raw_batch(envelopes: List[QueueEnvelope]) -> List[Optional[QueueEnvelope]]:
+    results: List[Optional[QueueEnvelope]] = []
+    for envelope in envelopes:
+        try:
+            results.append(_normalize_envelope(envelope))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"normalize_dedupe error for row_index={envelope.row_index}: {exc}")
+            results.append(None)
+    return results
+
+
 def run() -> None:
     run_worker_loop(
         servicebus_fqns=SERVICEBUS_FQNS,
         input_queue=QUEUE_NAMES["raw"],
         output_queue=QUEUE_NAMES["normalized"],
         worker_name="normalize_dedupe",
-        handler=_handle_raw,
+        batch_handler=_handle_raw_batch,
     )

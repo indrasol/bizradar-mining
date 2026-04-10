@@ -516,6 +516,10 @@ def insert_data(rows):
             version_payloads.append(_build_version_payload(row))
 
     try:
+        # Sort ascending by version_sort_key so the newest row is last.
+        # When two rows share the same natural key, the last-write-wins dict
+        # below will keep the newest one deterministically.
+        version_payloads.sort(key=lambda p: version_sort_key(p))
         dedup_versions: Dict[tuple, Dict[str, Any]] = {}
         for payload in version_payloads:
             key = (
@@ -524,7 +528,7 @@ def insert_data(rows):
                 payload.get("source_archive_type") or "",
                 payload.get("source_archive_date"),
             )
-            dedup_versions[key] = payload
+            dedup_versions[key] = payload  # newest (last in sorted order) overwrites older
         version_payloads = list(dedup_versions.values())
 
         processed = 0
