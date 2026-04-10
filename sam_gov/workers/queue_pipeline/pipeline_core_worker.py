@@ -2,7 +2,7 @@ import signal
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from sam_gov.utils.logger import get_logger
 from .config import (
@@ -26,8 +26,9 @@ class StageSpec:
     name: str
     input_queue: str
     output_queue: Optional[str]
-    handler: Callable[[QueueEnvelope], Optional[QueueEnvelope]]
     concurrency: int
+    handler: Optional[Callable[[QueueEnvelope], Optional[QueueEnvelope]]] = None
+    batch_handler: Optional[Callable[[List[QueueEnvelope]], List[Optional[QueueEnvelope]]]] = None
 
 
 def _build_stage_specs() -> list[StageSpec]:
@@ -47,21 +48,21 @@ def _build_stage_specs() -> list[StageSpec]:
             name="normalize_dedupe",
             input_queue=QUEUE_NAMES["raw"],
             output_queue=QUEUE_NAMES["normalized"],
-            handler=normalize_dedupe_worker._handle_raw,
+            batch_handler=normalize_dedupe_worker._handle_raw_batch,
             concurrency=CORE_NORMALIZE_DEDUPE_CONCURRENCY,
         ),
         StageSpec(
             name="thread_match",
             input_queue=QUEUE_NAMES["normalized"],
             output_queue=QUEUE_NAMES["threaded"],
-            handler=thread_match_worker._handle_normalized,
+            batch_handler=thread_match_worker._handle_normalized_batch,
             concurrency=CORE_THREAD_MATCH_CONCURRENCY,
         ),
         StageSpec(
             name="persist",
             input_queue=QUEUE_NAMES["embedded"],
             output_queue=QUEUE_NAMES["results"],
-            handler=persist_worker._handle_embedded,
+            batch_handler=persist_worker._handle_embedded_batch,
             concurrency=CORE_PERSIST_CONCURRENCY,
         ),
         StageSpec(
@@ -82,6 +83,7 @@ def _run_stage_worker(spec: StageSpec, stop_event: threading.Event, index: int) 
         output_queue=spec.output_queue,
         worker_name=worker_name,
         handler=spec.handler,
+        batch_handler=spec.batch_handler,
         stop_event=stop_event,
     )
 
