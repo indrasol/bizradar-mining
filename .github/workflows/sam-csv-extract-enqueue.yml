@@ -76,6 +76,13 @@ jobs:
         run: |
           python sam_gov/data_extraction.py
 
+      - name: Re-authenticate Azure (token refresh before Service Bus)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+
       - name: Upload/enqueue CSV chunks (Service Bus)
         env:
           CSV_PATH: ${{ env.CSV_PATH }}
