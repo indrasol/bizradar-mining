@@ -3,20 +3,16 @@ name: SAM CSV Extract and Enqueue
 on:
   workflow_dispatch:
     inputs:
-      csv_path:
-        description: "Absolute path to CSV file to download/enqueue"
-        required: false
-        default: ""
       csv_limit:
-        description: "Optional row limit for enqueue producer"
+        description: "Optional row limit (e.g. 100 for a test run)"
         required: false
         default: ""
       chunk_size:
-        description: "Rows per chunk message"
+        description: "Rows per chunk message (default: 500)"
         required: false
         default: "500"
       run_id:
-        description: "Optional custom run id"
+        description: "Optional custom run ID for tracing"
         required: false
         default: ""
 
@@ -25,13 +21,10 @@ permissions:
   contents: read
 
 jobs:
-  extract-and-enqueue:
+  trigger-enqueue-job:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Azure Login
         uses: azure/login@v2
         with:
@@ -39,59 +32,24 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-          cache: "pip"
-
-      - name: Install Python dependencies
+      - name: Trigger CSV Enqueue Job
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+          # Build env var overrides for this specific execution.
+          # Any value set here overrides the defaults baked into the job's Bicep definition.
+          ENV_VARS="CSV_CHUNK_SIZE_BIZ=${{ github.event.inputs.chunk_size || '500' }}"
 
-      - name: Resolve CSV path and options
-        run: |
-          if [ -n "${{ github.event.inputs.csv_path }}" ]; then
-            echo "CSV_PATH=${{ github.event.inputs.csv_path }}" >> "$GITHUB_ENV"
-          else
-            echo "CSV_PATH=${{ github.workspace }}/ContractOpportunitiesFullCSV.csv" >> "$GITHUB_ENV"
-          fi
           if [ -n "${{ github.event.inputs.csv_limit }}" ]; then
-            echo "CSV_LIMIT=${{ github.event.inputs.csv_limit }}" >> "$GITHUB_ENV"
+            ENV_VARS="$ENV_VARS CSV_LIMIT_BIZ=${{ github.event.inputs.csv_limit }}"
           fi
-          echo "CSV_CHUNK_SIZE_BIZ=${{ github.event.inputs.chunk_size || '500' }}" >> "$GITHUB_ENV"
+
           if [ -n "${{ github.event.inputs.run_id }}" ]; then
-            echo "PIPELINE_RUN_ID_BIZ=${{ github.event.inputs.run_id }}" >> "$GITHUB_ENV"
+            ENV_VARS="$ENV_VARS PIPELINE_RUN_ID_BIZ=${{ github.event.inputs.run_id }}"
           fi
 
-      - name: Download latest SAM.gov CSV
-        env:
-          CSV_PATH: ${{ env.CSV_PATH }}
-        run: |
-          python sam_gov/data_extraction.py
+          az containerapp job start \
+            --name caj-csv-enqueue \
+            --resource-group ${{ secrets.AZ_RESOURCE_GROUP_BIZ }} \
+            --env-vars $ENV_VARS
 
-      - name: Re-authenticate Azure (token refresh before Service Bus)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
-
-      - name: Upload/enqueue CSV chunks (Service Bus)
-        env:
-          CSV_PATH: ${{ env.CSV_PATH }}
-          CSV_LIMIT: ${{ env.CSV_LIMIT }}
-          CSV_CHUNK_SIZE_BIZ: ${{ env.CSV_CHUNK_SIZE_BIZ }}
-          PIPELINE_RUN_ID_BIZ: ${{ env.PIPELINE_RUN_ID_BIZ }}
-          AZURE_STORAGE_ACCOUNT_URL_BIZ: ${{ secrets.AZURE_STORAGE_ACCOUNT_URL_BIZ }}
-          AZURE_STORAGE_CONTAINER_BIZ: ${{ secrets.AZURE_STORAGE_CONTAINER_BIZ }}
-          AZURE_SERVICEBUS_FQNS_BIZ: ${{ secrets.AZURE_SERVICEBUS_FQNS_BIZ }}
-          AZURE_SERVICEBUS_QUEUE_CHUNKS_BIZ: ${{ secrets.AZURE_SERVICEBUS_QUEUE_CHUNKS_BIZ }}
-        run: |
-          if [ -n "${CSV_LIMIT}" ]; then
-            python -m sam_gov.services.cron.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --limit "${CSV_LIMIT}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
-          else
-            python -m sam_gov.services.cron.csv_enqueue_servicebus --csv-path "${CSV_PATH}" --chunk-size "${CSV_CHUNK_SIZE_BIZ}"
-          fi
+          echo "CSV enqueue job triggered. The pipeline runs independently on Azure."
+          echo "Monitor progress at: https://portal.azure.com/#resource/subscriptions/${{ secrets.AZ_SUBSCRIPTION_ID_BIZ }}/resourceGroups/${{ secrets.AZ_RESOURCE_GROUP_BIZ }}/providers/Microsoft.App/jobs/caj-csv-enqueue/executions"

@@ -1,0 +1,74 @@
+name: "[Job] CSV Enqueue CI/CD"
+
+on:
+  push:
+    paths:
+      - 'sam_gov/services/cron/csv_enqueue_servicebus.py'
+      - 'sam_gov/data_extraction.py'
+      - 'requirements.txt'
+      - 'docker/csv-enqueue.Dockerfile'
+      - 'docker/csv-enqueue-entrypoint.sh'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+
+      - name: Build and Push Enqueue Job Image
+        run: |
+          ACR_NAME="${{ secrets.AZ_ACR_NAME }}"
+          az acr login --name "$ACR_NAME"
+
+          IMAGE_NAME="bizradar-csv-enqueue"
+
+          # Purge existing tags to keep ACR storage lean
+          echo "Purging existing tags for $IMAGE_NAME..."
+          TAGS=$(az acr repository show-tags --name "$ACR_NAME" --repository "$IMAGE_NAME" --output tsv 2>/dev/null || true)
+          if [ -n "$TAGS" ]; then
+            for TAG in $TAGS; do
+              az acr repository delete --yes --name "$ACR_NAME" --image "$IMAGE_NAME:$TAG" || true
+            done
+          fi
+
+          ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)
+          BASE_IMAGE="$ACR_LOGIN_SERVER/bizradar-base:latest"
+
+          # Always pull the latest base to pick up any dependency updates
+          docker pull "$BASE_IMAGE"
+
+          IMAGE_TAG=${{ github.sha }}
+          IMAGE_URI="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+          LATEST_URI="$ACR_LOGIN_SERVER/$IMAGE_NAME:latest"
+
+          docker build \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            -t "$IMAGE_URI" \
+            -t "$LATEST_URI" \
+            -f docker/csv-enqueue.Dockerfile .
+
+          docker push "$IMAGE_URI"
+          docker push "$LATEST_URI"
+
+          echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
+
+      - name: Update Container Apps Job Image
+        run: |
+          az containerapp job update \
+            --name caj-csv-enqueue \
+            --resource-group ${{ secrets.AZ_RESOURCE_GROUP_BIZ }} \
+            --image "$IMAGE_URI"

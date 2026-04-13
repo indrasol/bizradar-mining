@@ -7,6 +7,7 @@ param containerApp1Name string = 'ca-cleaning-and-upsert'
 param containerApp2Name string = 'ca-classify-and-summarize'
 param containerApp3Name string = 'ca-embedding'
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+param csvEnqueueJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
 param storageAccountName string = 'indraproducts'
 param keyVaultName string = 'kv-bizradar'
@@ -73,6 +74,17 @@ module container3 './modules/compute/container3.bicep' = {
   }
 }
 
+// 8. Compute: CSV Enqueue Job (event-driven ingestion trigger)
+module csvEnqueueJob './modules/compute/csv-enqueue-job.bicep' = {
+  name: 'csvEnqueueJob'
+  params: {
+    location: location
+    containerAppsEnvironmentId: foundation.outputs.containerAppsEnvironmentId
+    containerImage: csvEnqueueJobImage
+    keyVaultName: keyVaultName
+  }
+}
+
 // 4. Security: Managed Identity + Role Assignments
 module security './modules/security.bicep' = {
   name: 'security'
@@ -82,6 +94,7 @@ module security './modules/security.bicep' = {
       container1.outputs.principalId
       container2.outputs.principalId
       container3.outputs.principalId
+      csvEnqueueJob.outputs.principalId
     ]
   }
 }
