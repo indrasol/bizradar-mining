@@ -1,7 +1,7 @@
 try:
-    from sam_gov.config.settings import env_int, env_str
+    from sam_gov.config.settings import env_int, env_str, PERSIST_UPSERT_BATCH_SIZE
 except Exception:
-    from sam_gov.config.settings import env_int, env_str
+    from sam_gov.config.settings import env_int, env_str, PERSIST_UPSERT_BATCH_SIZE
 
 
 QUEUE_NAMES = {

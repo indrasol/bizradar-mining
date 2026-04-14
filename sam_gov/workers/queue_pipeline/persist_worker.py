@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from sam_gov.services.cron.csv_import_sam_gov import insert_data
 from sam_gov.utils.logger import get_logger
-from .config import SERVICEBUS_FQNS, QUEUE_NAMES
+from .config import SERVICEBUS_FQNS, QUEUE_NAMES, PERSIST_UPSERT_BATCH_SIZE
 from .contracts import QueueEnvelope, make_envelope, idempotency_key
 from .queue_io import run_worker_loop
 
@@ -77,4 +77,5 @@ def run() -> None:
         output_queue=QUEUE_NAMES["results"],
         worker_name="persist",
         batch_handler=_handle_embedded_batch,
+        max_message_count=PERSIST_UPSERT_BATCH_SIZE,
     )
