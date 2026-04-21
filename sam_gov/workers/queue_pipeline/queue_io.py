@@ -75,6 +75,7 @@ def run_worker_loop(
     handler: Optional[Callable[[QueueEnvelope], Optional[QueueEnvelope]]] = None,
     batch_handler: Optional[Callable[[List[QueueEnvelope]], List[Optional[QueueEnvelope]]]] = None,
     stop_event: Optional[Event] = None,
+    max_message_count: int = 20,
 ) -> None:
     if not servicebus_fqns:
         raise ValueError("Service Bus FQNS is required")
@@ -93,7 +94,7 @@ def run_worker_loop(
                     logger.info(f"{worker_name} stop requested; exiting loop")
                     return
                 try:
-                    messages = receiver.receive_messages(max_message_count=20, max_wait_time=10)
+                    messages = receiver.receive_messages(max_message_count=max_message_count, max_wait_time=10)
                 except ServiceBusError as exc:
                     logger.error(f"{worker_name} receive error: {exc}")
                     time.sleep(2)
