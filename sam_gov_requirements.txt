@@ -1,0 +1,16 @@
+# SAM.gov Ingestion Pipeline — Python dependencies
+# Used by: Dockerfile.sam-gov-pipeline → caj-sam-gov-scheduler
+
+# --- Scraping (data_extraction.py) ---
+playwright>=1.40.0
+
+# --- Data processing (dedup_and_chunk.py) ---
+pandas>=2.1.0
+requests>=2.31.0
+
+# --- Blob upload (blob_upload.py) ---
+azure-identity>=1.15.0
+azure-storage-blob>=12.19.0
+
+# --- Parallel ingestion (ingest.py) ---
+aiohttp>=3.9.0
