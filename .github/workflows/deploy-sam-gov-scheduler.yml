@@ -31,7 +31,7 @@ jobs:
         uses: azure/arm-deploy@v2
         with:
           resourceGroupName: ${{ secrets.AZ_RESOURCE_GROUP_BIZ }}
-          template: infra/azure/bicep/deploy-sam-gov-scheduler.bicep
+          template: infra/azure/bicep/modules/compute/sam-gov-scheduler.bicep
           parameters: >-
             containerImage=${{ github.event.inputs.container_image }}
           failOnStdErr: false
