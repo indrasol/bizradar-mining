@@ -1,0 +1,37 @@
+name: Deploy SAM.gov Scheduler ACJ
+
+on:
+  workflow_dispatch:
+    inputs:
+      container_image:
+        description: "Container image (leave default for initial provisioning)"
+        required: false
+        default: "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-acj:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+
+      - name: Deploy SAM.gov Scheduler
+        uses: azure/arm-deploy@v2
+        with:
+          resourceGroupName: ${{ secrets.AZ_RESOURCE_GROUP_BIZ }}
+          template: infra/azure/bicep/deploy-sam-gov-scheduler.bicep
+          parameters: >-
+            containerImage=${{ github.event.inputs.container_image }}
+          failOnStdErr: false
