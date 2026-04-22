@@ -8,7 +8,6 @@ param containerApp2Name string = 'ca-classify-and-summarize'
 param containerApp3Name string = 'ca-embedding'
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 param csvEnqueueJobImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
-param samGovSchedulerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
 param storageAccountName string = 'indraproducts'
 param keyVaultName string = 'kv-bizradar'
@@ -86,17 +85,6 @@ module csvEnqueueJob './modules/compute/csv-enqueue-job.bicep' = {
   }
 }
 
-// 9. Compute: SAM.gov Scheduler Job (scheduled ingestion)
-module samGovScheduler './modules/compute/sam-gov-scheduler.bicep' = {
-  name: 'samGovScheduler'
-  params: {
-    location: location
-    containerAppsEnvironmentId: foundation.outputs.containerAppsEnvironmentId
-    containerImage: samGovSchedulerImage
-    keyVaultName: keyVaultName
-  }
-}
-
 // 4. Security: Managed Identity + Role Assignments
 module security './modules/security.bicep' = {
   name: 'security'
@@ -107,7 +95,6 @@ module security './modules/security.bicep' = {
       container2.outputs.principalId
       container3.outputs.principalId
       csvEnqueueJob.outputs.principalId
-      samGovScheduler.outputs.principalId
     ]
   }
 }
