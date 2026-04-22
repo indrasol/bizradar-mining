@@ -1,52 +1,98 @@
-# ---------------------------------------------------------------------------
-# Dockerfile — SAM.gov Ingestion Pipeline
-#
-# Standalone image for caj-sam-gov-scheduler (Azure Container App Job).
-# Does NOT extend the shared base image — fully self-contained.
-#
-# Includes:
-#   - Python 3.11
-#   - Playwright + Chromium (for SAM.gov scraping)
-#   - pandas, requests, aiohttp (for dedup, chunking, ingestion)
-#   - Azure SDK (for blob upload via managed identity)
-#
-# Build (from repo root):
-#   docker build -t sam-gov-pipeline:latest -f docker/sam-gov-cron.Dockerfile .
-#
-# The image is ~1.5-2 GB due to Chromium. This is normal for headless
-# browser containers and only downloaded once by ACR.
-# ---------------------------------------------------------------------------
+param location string
+param containerAppsEnvironmentId string
+param containerImage string
+param keyVaultName string
 
-FROM python:3.11-slim
+param cronExpression string = '0 0 * * *'
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+resource samGovScheduler 'Microsoft.App/jobs@2024-03-01' = {
+  name: 'caj-sam-gov-scheduler'
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    environmentId: containerAppsEnvironmentId
+    configuration: {
+      triggerType: 'Schedule'
+      scheduleTriggerConfig: {
+        cronExpression: cronExpression
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      replicaTimeout: 7200
+      replicaRetryLimit: 1
+      registries: [
+        {
+          server: 'securetrack-dzc8a3deejhje7d4.azurecr.io'
+          identity: 'system'
+        }
+      ]
+      secrets: [
+        {
+          name: 'supabase-service-key-biz'
+          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/SUPABASE-SERVICE-KEY-BIZ'
+          identity: 'system'
+        }
+        {
+          name: 'sam-api-key-biz'
+          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/SAM-API-KEY-BIZ'
+          identity: 'system'
+        }
+        {
+          name: 'openrag-api-key-biz'
+          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/OPENRAG-API-KEY-BIZ'
+          identity: 'system'
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'sam-gov-pipeline'
+          image: containerImage
+          resources: {
+            cpu: json('2.0')
+            memory: '4.0Gi'
+          }
+          env: [
+            {
+              name: 'SUPABASE_SERVICE_KEY'
+              secretRef: 'supabase-service-key-biz'
+            }
+            {
+              name: 'SAM_API_KEY'
+              secretRef: 'sam-api-key-biz'
+            }
+            {
+              name: 'OPENRAG_API_KEY'
+              secretRef: 'openrag-api-key-biz'
+            }
+            {
+              name: 'OPENRAG_BASE_URL'
+              value: 'https://api.openrag.bizradar.ai'
+            }
+            {
+              name: 'AZURE_STORAGE_ACCOUNT_URL_BIZ'
+              value: 'https://indraproducts.blob.core.windows.net'
+            }
+            {
+              name: 'AZURE_STORAGE_CONTAINER_BIZ'
+              value: 'csv-ingest'
+            }
+            {
+              name: 'SUPABASE_URL'
+              value: 'https://fgfehbbljxsuxjdwvmrv.supabase.co'
+            }
+            {
+              name: 'ENV'
+              value: 'production'
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
 
-WORKDIR /app
-
-# System dependencies:
-#   - gcc, python3-dev: compile native Python extensions
-#   - libpq-dev: psycopg2 (Postgres client, if needed downstream)
-#   - curl: health check probes
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    python3-dev \
-    libpq-dev \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Python dependencies (separate from the shared requirements.txt)
-COPY sam_gov_requirements.txt .
-RUN pip install --no-cache-dir -r sam_gov_requirements.txt
-
-# Playwright: install the Chromium binary + all system-level libs it needs
-# (libnss3, libatk, libgbm, etc.). The --with-deps flag is critical on slim images.
-RUN playwright install --with-deps chromium
-
-# Copy the entire sam_gov package (includes acj_cron pipeline + shared modules)
-COPY sam_gov/ ./sam_gov/
-
-ENV PYTHONPATH="/app"
-
-# Default entrypoint: run the ACJ cron pipeline orchestrator
-CMD ["python", "-m", "sam_gov.services.acj_cron.main"]
+output principalId string = samGovScheduler.identity.principalId
