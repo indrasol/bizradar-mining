@@ -1,36 +1,51 @@
-"""Step 4: Ingest chunks into OpenRAG via its public API.
+"""Step 2: Deduplicate and chunk new SAM.gov opportunities.
 
 Responsibilities:
-  - Take chunk payloads from dedup_and_chunk.py
-  - Write each chunk to a temp .txt file
-  - POST each file to OpenRAG's /v1/documents/ingest endpoint (multipart)
-  - Poll /v1/tasks/{task_id} until completion or failure
-  - Run chunks in parallel with a configurable concurrency limit
-  - Return a summary of successes, failures, and task IDs
+  - Read the processed CSV (output of data_extraction.py)
+  - Query Supabase for all existing notice IDs
+  - Filter the dataframe to new (unseen) rows only
+  - Chunk new rows into fixed-size slices
+  - Serialize each chunk into the key-value text format OpenRAG expects
+  - Delete the CSV after chunking to reclaim container disk space
+  - Return a list of chunk payloads ready for API ingestion
 
-This script does NOT download, deduplicate, chunk, or upload to blob.
+Logic mirrors the legacy incremental_ingest.py filter_csv() and
+chunk_filtered_csv() functions, with Supabase replacing OpenSearch.
+
+This script does NOT download, upload to blob, or call OpenRAG's API.
 """
 
-import asyncio
-import io
 import logging
+import math
 import os
-import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
-import aiohttp
-
-from .dedup_and_chunk import ChunkPayload
+import pandas as pd
+import requests
 
 logger = logging.getLogger(__name__)
 
-OPENRAG_BASE_URL = os.getenv("OPENRAG_BASE_URL", "http://localhost:8000")
-OPENRAG_API_KEY = os.environ.get("OPENRAG_API_KEY", "")
-MAX_CONCURRENCY = int(os.getenv("INGEST_MAX_CONCURRENCY", "5"))
-TASK_POLL_INTERVAL = int(os.getenv("TASK_POLL_INTERVAL_SECONDS", "10"))
-TASK_POLL_TIMEOUT = int(os.getenv("TASK_POLL_TIMEOUT_SECONDS", "600"))
-MAX_RETRIES = int(os.getenv("INGEST_MAX_RETRIES", "3"))
-RETRY_BACKOFF_BASE = 2  # exponential backoff: 2^attempt seconds
+ROWS_PER_CHUNK = int(os.getenv("ROWS_PER_CHUNK", "500"))
+
+# Supabase connection — _BIZ suffix matches Bicep env var naming convention,
+# with non-suffixed fallback for local development
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL_BIZ",
+    os.environ.get("SUPABASE_URL", ""),
+)
+SUPABASE_SERVICE_KEY = os.environ.get(
+    "SUPABASE_SERVICE_KEY_BIZ",
+    os.environ.get("SUPABASE_SERVICE_KEY", ""),
+)
+SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "documents")
+SUPABASE_NOTICE_ID_COLUMN = os.getenv("SUPABASE_NOTICE_ID_COLUMN", "notice_id")
+
+# Encoding fallback chain (matches data_extraction.py)
+ENCODINGS = ("utf-8", "latin-1", "cp1252", "iso-8859-1")
+
+# Supabase PostgREST pagination limit
+_PAGE_SIZE = 10_000
 
 
 # ---------------------------------------------------------------------------
@@ -38,229 +53,235 @@ RETRY_BACKOFF_BASE = 2  # exponential backoff: 2^attempt seconds
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ChunkResult:
-    """Outcome of ingesting a single chunk."""
+class ChunkPayload:
+    """A single chunk ready to be POSTed to OpenRAG."""
 
     chunk_index: int
-    success: bool
-    task_id: str | None = None
-    task_status: str | None = None
-    error: str | None = None
+    row_start: int
+    row_end: int
+    row_count: int
+    content: str
     notice_ids: list[str] = field(default_factory=list)
-    duration_seconds: float = 0.0
 
 
 @dataclass
-class IngestionSummary:
-    """Summary of the full ingestion run."""
+class DeduplicationResult:
+    """Summary of the dedup + chunk step."""
 
-    total_chunks: int
-    succeeded: int
-    failed: int
-    duration_seconds: float
-    results: list[ChunkResult] = field(default_factory=list)
+    total_rows: int
+    active_rows: int
+    duplicate_rows: int
+    new_rows: int
+    num_chunks: int
+    chunks: list[ChunkPayload] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# API helpers
+# CSV reading
 # ---------------------------------------------------------------------------
 
-def _auth_headers() -> dict:
-    """Build authentication headers for OpenRAG's public API."""
-    if not OPENRAG_API_KEY:
+def _read_csv(path: Path) -> pd.DataFrame:
+    """Read CSV with encoding fallback chain."""
+    for enc in ENCODINGS:
+        try:
+            return pd.read_csv(path, encoding=enc, low_memory=False, on_bad_lines="skip")
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"Could not decode {path} with any supported encoding")
+
+
+# ---------------------------------------------------------------------------
+# Deduplication: fetch existing notice IDs from Supabase
+# ---------------------------------------------------------------------------
+
+def _fetch_existing_notice_ids() -> set[str]:
+    """Fetch all notice IDs already ingested, directly from Supabase.
+
+    Uses the PostgREST API to paginate through the documents table,
+    selecting only the notice_id column. Typically completes in a few
+    seconds even for 80k+ rows since we're fetching a single text column.
+
+    Requires SUPABASE_URL_BIZ and SUPABASE_SERVICE_KEY_BIZ environment variables.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         raise RuntimeError(
-            "OPENRAG_API_KEY must be set. "
-            "This should be injected via ACJ environment variables."
+            "SUPABASE_URL_BIZ and SUPABASE_SERVICE_KEY_BIZ must be set for deduplication. "
+            "These should be injected via ACJ environment variables."
         )
-    return {"X-API-Key": OPENRAG_API_KEY}
 
-
-async def _upload_chunk(
-    session: aiohttp.ClientSession,
-    chunk: ChunkPayload,
-    run_tag: str,
-) -> str:
-    """Upload a single chunk as a .txt file to OpenRAG. Returns task_id."""
-    url = f"{OPENRAG_BASE_URL}/v1/documents/ingest"
-    filename = f"{run_tag}_chunk_{chunk.chunk_index:04d}.txt"
-
-    # Build multipart form data with the chunk content as a .txt file
-    form = aiohttp.FormData()
-    form.add_field(
-        "file",
-        io.BytesIO(chunk.content.encode("utf-8")),
-        filename=filename,
-        content_type="text/plain",
+    base_url = (
+        f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_TABLE}"
+        f"?select={SUPABASE_NOTICE_ID_COLUMN}"
     )
-
-    async with session.post(url, data=form) as resp:
-        if resp.status not in (200, 201, 202):
-            body = await resp.text()
-            raise RuntimeError(
-                f"Upload failed for chunk {chunk.chunk_index}: "
-                f"HTTP {resp.status} - {body[:500]}"
-            )
-        data = await resp.json()
-
-    task_id = data.get("task_id")
-    if not task_id:
-        raise RuntimeError(
-            f"No task_id in response for chunk {chunk.chunk_index}: {data}"
-        )
-
-    logger.debug(f"Chunk {chunk.chunk_index} uploaded, task_id={task_id}")
-    return task_id
-
-
-async def _poll_task(session: aiohttp.ClientSession, task_id: str) -> str:
-    """Poll a task until it reaches a terminal state. Returns final status."""
-    url = f"{OPENRAG_BASE_URL}/v1/tasks/{task_id}"
-    deadline = time.monotonic() + TASK_POLL_TIMEOUT
-
-    while time.monotonic() < deadline:
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-
-        status = data.get("status", "unknown")
-        if status in ("completed", "failed", "cancelled"):
-            return status
-
-        await asyncio.sleep(TASK_POLL_INTERVAL)
-
-    raise TimeoutError(
-        f"Task {task_id} did not complete within {TASK_POLL_TIMEOUT}s"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Per-chunk pipeline (upload + poll + retry)
-# ---------------------------------------------------------------------------
-
-async def _ingest_one_chunk(
-    semaphore: asyncio.Semaphore,
-    session: aiohttp.ClientSession,
-    chunk: ChunkPayload,
-    run_tag: str,
-) -> ChunkResult:
-    """Ingest a single chunk with retries, respecting the concurrency limit."""
-    async with semaphore:
-        start = time.monotonic()
-        last_error = None
-
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                task_id = await _upload_chunk(session, chunk, run_tag)
-                status = await _poll_task(session, task_id)
-
-                duration = time.monotonic() - start
-
-                if status == "completed":
-                    logger.info(
-                        f"Chunk {chunk.chunk_index} ingested "
-                        f"({chunk.row_count} rows, {duration:.1f}s)"
-                    )
-                    return ChunkResult(
-                        chunk_index=chunk.chunk_index,
-                        success=True,
-                        task_id=task_id,
-                        task_status=status,
-                        notice_ids=chunk.notice_ids,
-                        duration_seconds=round(duration, 1),
-                    )
-
-                # Task finished but not successfully
-                last_error = f"Task {task_id} ended with status: {status}"
-                logger.warning(
-                    f"Chunk {chunk.chunk_index} attempt {attempt} "
-                    f"failed: {last_error}"
-                )
-
-            except Exception as exc:
-                last_error = str(exc)
-                logger.warning(
-                    f"Chunk {chunk.chunk_index} attempt {attempt} "
-                    f"error: {last_error}"
-                )
-
-            # Exponential backoff before retry
-            if attempt < MAX_RETRIES:
-                backoff = RETRY_BACKOFF_BASE ** attempt
-                logger.debug(f"Retrying chunk {chunk.chunk_index} in {backoff}s")
-                await asyncio.sleep(backoff)
-
-        # All retries exhausted
-        duration = time.monotonic() - start
-        logger.error(
-            f"Chunk {chunk.chunk_index} failed after {MAX_RETRIES} attempts: "
-            f"{last_error}"
-        )
-        return ChunkResult(
-            chunk_index=chunk.chunk_index,
-            success=False,
-            error=last_error,
-            notice_ids=chunk.notice_ids,
-            duration_seconds=round(duration, 1),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Main ingestion entry point
-# ---------------------------------------------------------------------------
-
-async def _run_ingestion(
-    chunks: list[ChunkPayload], run_tag: str
-) -> IngestionSummary:
-    """Ingest all chunks in parallel with bounded concurrency."""
-    start = time.monotonic()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-
-    headers = _auth_headers()
-    timeout = aiohttp.ClientTimeout(total=TASK_POLL_TIMEOUT + 120)
-
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        tasks = [
-            _ingest_one_chunk(semaphore, session, chunk, run_tag)
-            for chunk in chunks
-        ]
-        results = await asyncio.gather(*tasks)
-
-    duration = time.monotonic() - start
-    succeeded = sum(1 for r in results if r.success)
-    failed = sum(1 for r in results if not r.success)
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    }
 
     logger.info(
-        f"Ingestion complete: {succeeded}/{len(results)} chunks succeeded, "
-        f"{failed} failed, total time {duration:.1f}s"
+        f"Fetching existing notice IDs from Supabase "
+        f"(table: {SUPABASE_TABLE}, column: {SUPABASE_NOTICE_ID_COLUMN})"
     )
 
-    return IngestionSummary(
-        total_chunks=len(results),
-        succeeded=succeeded,
-        failed=failed,
-        duration_seconds=round(duration, 1),
-        results=list(results),
-    )
+    all_ids: set[str] = set()
+    offset = 0
+
+    while True:
+        url = f"{base_url}&offset={offset}&limit={_PAGE_SIZE}"
+
+        try:
+            resp = requests.get(url, headers=headers, timeout=120)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                f"Supabase query failed at offset {offset}: {exc}"
+            ) from exc
+
+        rows = resp.json()
+        if not rows:
+            break
+
+        for row in rows:
+            val = row.get(SUPABASE_NOTICE_ID_COLUMN)
+            if val is not None and str(val).strip():
+                all_ids.add(str(val).strip())
+
+        # If we got fewer rows than page size, we've reached the end
+        if len(rows) < _PAGE_SIZE:
+            break
+
+        offset += _PAGE_SIZE
+
+    logger.info(f"  {len(all_ids)} notice IDs already indexed")
+    return all_ids
 
 
-def ingest_chunks(chunks: list[ChunkPayload], run_tag: str) -> IngestionSummary:
-    """Synchronous wrapper for the async ingestion pipeline.
+# ---------------------------------------------------------------------------
+# Row serialization
+# ---------------------------------------------------------------------------
+
+def _row_to_text(columns: list[str], row) -> str:
+    """Format a single DataFrame row as key-value text for embedding.
+
+    Output format (one line per non-empty field):
+        NoticeId: ABC123
+        Title: Road Construction Project
+        ...
+    """
+    parts = []
+    for col in columns:
+        val = row[col]
+        if pd.notna(val) and str(val).strip():
+            parts.append(f"{col}: {val}")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Main pipeline
+# ---------------------------------------------------------------------------
+
+def dedup_and_chunk(csv_path: Path, run_tag: str = "") -> DeduplicationResult:
+    """Deduplicate the CSV against Supabase records and chunk new rows.
+
+    Mirrors the legacy incremental_ingest.py flow:
+      filter_csv()          -> dedup against known IDs
+      chunk_filtered_csv()  -> serialize to text chunks
 
     Args:
-        chunks:  List of ChunkPayload objects from dedup_and_chunk.py
-        run_tag: Unique prefix for this run (used in filenames sent to OpenRAG)
+        csv_path: Path to the processed CSV from data_extraction.py
+                  (already filtered to active rows, reversed).
+        run_tag:  Prefix for chunk identification (e.g. 'inc_20260421_0000').
+                  Used in logging; chunks are held in memory, not written to disk.
 
     Returns:
-        IngestionSummary with per-chunk results.
+        DeduplicationResult containing chunk payloads ready for ingestion.
+        If there are zero new rows, chunks will be an empty list.
+        The CSV is deleted after chunking to reclaim disk space.
     """
-    if not chunks:
-        logger.info("No chunks to ingest")
-        return IngestionSummary(
-            total_chunks=0, succeeded=0, failed=0, duration_seconds=0.0
+    # -- Read and count --
+    logger.info("Filtering CSV...")
+    df = _read_csv(csv_path)
+    total = len(df)
+
+    # Active filter (data_extraction.py already does this, but guard against
+    # cases where the CSV came from blob replay without pre-filtering)
+    if "Active" in df.columns:
+        df = df[df["Active"].astype(str).str.strip().str.lower() == "yes"]
+    active = len(df)
+
+    logger.info(f"  {total} total rows, {active} active")
+
+    # -- Validate NoticeId column --
+    if "NoticeId" not in df.columns:
+        raise ValueError(
+            f"CSV is missing 'NoticeId' column. Found columns: {list(df.columns)[:10]}"
         )
 
-    logger.info(
-        f"Starting ingestion of {len(chunks)} chunks "
-        f"(concurrency={MAX_CONCURRENCY}, run_tag={run_tag})"
+    # -- Dedup against Supabase --
+    existing_ids = _fetch_existing_notice_ids()
+
+    df["_nid"] = df["NoticeId"].astype(str).str.strip()
+    df = df[~df["_nid"].isin(existing_ids)]
+    # Keep cleaned notice IDs for chunk metadata
+    notice_id_series = df["_nid"].reset_index(drop=True)
+    df = df.drop(columns=["_nid"]).reset_index(drop=True)
+
+    new = len(df)
+    already_indexed = active - new
+    logger.info(f"  {new} new notices to ingest (filtered {already_indexed} already indexed)")
+
+    if new == 0:
+        csv_path.unlink(missing_ok=True)
+        logger.info("  Deleted CSV, nothing to chunk")
+        return DeduplicationResult(
+            total_rows=total,
+            active_rows=active,
+            duplicate_rows=already_indexed,
+            new_rows=0,
+            num_chunks=0,
+            chunks=[],
+        )
+
+    # -- Chunk new rows --
+    logger.info("Chunking new notices...")
+    columns = list(df.columns)
+    num_chunks = math.ceil(new / ROWS_PER_CHUNK)
+    prefix = f"{run_tag}_" if run_tag else ""
+    logger.info(f"  {new} rows -> {num_chunks} chunks (prefix: {prefix})")
+
+    chunks: list[ChunkPayload] = []
+    for i in range(num_chunks):
+        start = i * ROWS_PER_CHUNK
+        end = min(start + ROWS_PER_CHUNK, new)
+        chunk_df = df.iloc[start:end]
+
+        # Serialize rows to text
+        records = [_row_to_text(columns, row) for _, row in chunk_df.iterrows()]
+        content = "\n\n".join(records)
+
+        # Collect notice IDs for this chunk (useful for logging and retries)
+        chunk_nids = notice_id_series.iloc[start:end].tolist()
+
+        chunks.append(
+            ChunkPayload(
+                chunk_index=i + 1,
+                row_start=start,
+                row_end=end,
+                row_count=end - start,
+                content=content,
+                notice_ids=chunk_nids,
+            )
+        )
+
+    # Clean up CSV to reclaim disk space inside the container
+    csv_path.unlink(missing_ok=True)
+    logger.info(f"  Created {num_chunks} chunks, deleted CSV")
+
+    return DeduplicationResult(
+        total_rows=total,
+        active_rows=active,
+        duplicate_rows=already_indexed,
+        new_rows=new,
+        num_chunks=num_chunks,
+        chunks=chunks,
     )
-    return asyncio.run(_run_ingestion(chunks, run_tag))

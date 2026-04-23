@@ -28,9 +28,16 @@ logger = logging.getLogger(__name__)
 
 ROWS_PER_CHUNK = int(os.getenv("ROWS_PER_CHUNK", "500"))
 
-# Supabase connection (required)
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+# Supabase connection — _BIZ suffix matches Bicep env var naming convention,
+# with non-suffixed fallback for local development
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL_BIZ",
+    os.environ.get("SUPABASE_URL", ""),
+)
+SUPABASE_SERVICE_KEY = os.environ.get(
+    "SUPABASE_SERVICE_KEY_BIZ",
+    os.environ.get("SUPABASE_SERVICE_KEY", ""),
+)
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "documents")
 SUPABASE_NOTICE_ID_COLUMN = os.getenv("SUPABASE_NOTICE_ID_COLUMN", "notice_id")
 
@@ -94,11 +101,11 @@ def _fetch_existing_notice_ids() -> set[str]:
     selecting only the notice_id column. Typically completes in a few
     seconds even for 80k+ rows since we're fetching a single text column.
 
-    Requires SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables.
+    Requires SUPABASE_URL_BIZ and SUPABASE_SERVICE_KEY_BIZ environment variables.
     """
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         raise RuntimeError(
-            "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set for deduplication. "
+            "SUPABASE_URL_BIZ and SUPABASE_SERVICE_KEY_BIZ must be set for deduplication. "
             "These should be injected via ACJ environment variables."
         )
 

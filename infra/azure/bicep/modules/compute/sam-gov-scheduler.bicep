@@ -2,7 +2,6 @@ param location string
 param containerAppsEnvironmentId string
 param containerImage string
 param keyVaultName string
-
 param acrServer string = 'securetrack-dzc8a3deejhje7d4.azurecr.io'
 param cronExpression string = '0 0 * * *'
 
@@ -40,6 +39,16 @@ resource samGovScheduler 'Microsoft.App/jobs@2024-03-01' = {
           keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/SAM-API-KEY-BIZ'
           identity: 'system'
         }
+        {
+          name: 'openrag-api-key'
+          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/OPENRAG-API-KEY'
+          identity: 'system'
+        }
+        {
+          name: 'openrag-base-url'
+          keyVaultUrl: 'https://${keyVaultName}.vault.azure.net/secrets/OPENRAG-BASE-URL'
+          identity: 'system'
+        }
       ]
     }
     template: {
@@ -61,6 +70,14 @@ resource samGovScheduler 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'SAM_API_KEY_BIZ'
               secretRef: 'sam-api-key-biz'
+            }
+            {
+              name: 'OPENRAG_API_KEY'
+              secretRef: 'openrag-api-key'
+            }
+            {
+              name: 'OPENRAG_BASE_URL'
+              secretRef: 'openrag-base-url'
             }
             {
               name: 'AZURE_KEYVAULT_NAME_BIZ'
@@ -85,10 +102,6 @@ resource samGovScheduler 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'SUPABASE_NOTICE_ID_COLUMN'
               value: 'notice_id'
-            }
-            {
-              name: 'OPENRAG_BASE_URL'
-              value: 'http://ca-openrag-backend'
             }
             {
               name: 'ENV_BIZ'
