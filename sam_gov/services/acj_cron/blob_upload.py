@@ -3,7 +3,7 @@
 Responsibilities:
   - Compute a SHA-256 hash of the CSV for integrity and idempotency
   - Upload the raw CSV to blob storage for auditability and replay
-  - Organize files under runs/{run_id}/ for traceability
+  - Organize files under sam_gov_opportunities/{date_time}/ for traceability
   - Return the blob reference, hash, and metadata for downstream logging
 
 This is a safety net: if dedup or ingestion fails, the raw file
@@ -57,7 +57,7 @@ def upload_to_blob(csv_path: Path, run_id: str | None = None) -> dict:
     Mirrors the legacy _upload_blob logic from csv_enqueue_servicebus.py:
       - Computes SHA-256 hash before upload
       - Uses DefaultAzureCredential (managed identity in ACJ)
-      - Stores under runs/{run_id}/{filename}
+      - Stores under sam_gov_opportunities/{date_time}/{filename}
       - Overwrites if blob already exists (idempotent re-runs)
 
     Args:
@@ -94,8 +94,10 @@ def upload_to_blob(csv_path: Path, run_id: str | None = None) -> dict:
     csv_sha256 = _sha256_file(csv_path)
     logger.info(f"CSV SHA-256: {csv_sha256}")
 
+    # Readable date folder: sam_gov_opportunities/2026-04-23_000000/filename.csv
+    date_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
     filename = csv_path.name
-    blob_name = f"runs/{run_id}/{filename}"
+    blob_name = f"sam_gov_opportunities/{date_tag}/{filename}"
     blob_url = f"{STORAGE_ACCOUNT_URL.rstrip('/')}/{STORAGE_CONTAINER}/{blob_name}"
 
     logger.info(f"Uploading {filename} to blob: {blob_name}")
